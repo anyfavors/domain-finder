@@ -43,6 +43,7 @@ Available options:
 - `--log-file` – path to the log file
 - `--tld-cache-file` – path to the cached TLD list
 - `--tld-cache-age` – maximum age of the cache in seconds
+- `--metrics-cache-file` – path to the cached metrics file
 - `--force-refresh` – ignore cache and fetch TLDs again
 - `--dns-batch-size` – number of concurrent DNS lookups per batch
 

@@ -27,6 +27,7 @@ LOG_FILE = 'domain_scanner.log'
 SORTED_LIST_FILE = 'sorted_domains.jsonl'
 TLD_CACHE_FILE = 'tlds.json'
 TLD_CACHE_MAX_AGE = 86400  # one day in seconds
+METRICS_CACHE_FILE = 'metrics.json'
 
 throttle = 0.05  # pause mellem DNS-tjek
 DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
@@ -46,6 +47,7 @@ class DomainFinder:
         log_file: str = LOG_FILE,
         tld_cache_file: str = TLD_CACHE_FILE,
         tld_cache_age: int = TLD_CACHE_MAX_AGE,
+        metrics_cache_file: str = METRICS_CACHE_FILE,
         force_refresh: bool = False,
         pause: float = throttle,
         dns_batch_size: int = DNS_BATCH_SIZE,
@@ -61,7 +63,10 @@ class DomainFinder:
         self.dns_batch_size = dns_batch_size
         self.tld_cache_file = tld_cache_file
         self.tld_cache_age = tld_cache_age
+        self.metrics_cache_file = metrics_cache_file
         self.force_refresh = force_refresh
+
+        self.metrics_cache: dict[str, dict[str, int]] = {}
 
         self.processed: set[tuple[str, str]] = set()
         self.found: list[dict] = []
@@ -140,6 +145,31 @@ class DomainFinder:
                 f.write(json.dumps(r) + '\n')
         logging.info(f"Gemte sorteret liste til {self.sorted_list_file}")
 
+    # -- Metrics cache helpers -- #
+    def load_metrics_cache(self) -> None:
+        """Load metrics cache from disk if available."""
+        try:
+            with open(self.metrics_cache_file, 'r') as f:
+                self.metrics_cache = json.load(f)
+            if not isinstance(self.metrics_cache, dict):
+                self.metrics_cache = {}
+            logging.info(
+                f"Indlæste metrics cache med {len(self.metrics_cache)} labels"
+            )
+        except FileNotFoundError:
+            self.metrics_cache = {}
+        except Exception as e:
+            logging.error(f"Kunne ikke læse metrics cache: {e}")
+            self.metrics_cache = {}
+
+    def save_metrics_cache(self) -> None:
+        """Persist metrics cache to disk."""
+        try:
+            with open(self.metrics_cache_file, 'w') as f:
+                json.dump(self.metrics_cache, f)
+        except Exception as e:
+            logging.error(f"Kunne ikke gemme metrics cache: {e}")
+
     def write_html(self, results: list[dict]) -> None:
         """Generate and write HTML output for available domains."""
         rows = ''.join(
@@ -169,6 +199,7 @@ class DomainFinder:
         """Handle SIGINT by saving HTML output and exiting."""
         logging.info('Afslutter og gemmer HTML...')
         self.write_html(self.found)
+        self.save_metrics_cache()
         sys.exit(0)
 
     async def run(self) -> None:
@@ -185,12 +216,13 @@ class DomainFinder:
         signal.signal(signal.SIGINT, self.graceful_exit)
 
         self.load_progress()
+        self.load_metrics_cache()
         tlds = self.fetch_tlds()
         labels = generate_labels(self.num_candidates, self.max_label_len)
 
         logging.info(f"Starter beregning af metrics for {len(labels)} labels")
-        volumes = await gather_search_volumes(labels)
-        autos = await gather_autocomplete_counts(labels)
+        volumes = await gather_search_volumes(labels, self.metrics_cache)
+        autos = await gather_autocomplete_counts(labels, self.metrics_cache)
         label_stats = {}
         for lbl in tqdm(labels, desc='Label metrics', unit='label'):
             label_stats[lbl] = {
@@ -250,6 +282,7 @@ class DomainFinder:
         logging.info("Starter DNS-scanning af sorteret liste...")
         await self.scan_domains(raw)
         logging.info("Scanning færdig.")
+        self.save_metrics_cache()
 
     async def _check_record(self, r: dict) -> None:
         """Helper to check a single record and save if available."""
@@ -303,6 +336,8 @@ def parse_args():
                         help='path to cached TLD JSON file')
     parser.add_argument('--tld-cache-age', type=int, default=TLD_CACHE_MAX_AGE,
                         help='maximum cache age in seconds')
+    parser.add_argument('--metrics-cache-file', default=METRICS_CACHE_FILE,
+                        help='path to cached metrics JSON file')
     parser.add_argument('--force-refresh', action='store_true',
                         help='force refresh of TLD list')
     parser.add_argument('--dns-batch-size', type=int, default=DNS_BATCH_SIZE,
@@ -430,12 +465,33 @@ async def search_volume(label, session: aiohttp.ClientSession | None = None, ret
     return 0
 
 
-async def gather_search_volumes(labels: list[str]) -> dict[str, int]:
-    """Fetch search volume for all labels concurrently."""
-    async with aiohttp.ClientSession() as session:
-        tasks = {lbl: asyncio.create_task(search_volume(lbl, session)) for lbl in labels}
-        results = await asyncio.gather(*tasks.values())
-    return dict(zip(tasks.keys(), results))
+async def gather_search_volumes(
+    labels: list[str], cache: dict[str, dict[str, int]] | None = None
+) -> dict[str, int]:
+    """Fetch search volume for all labels concurrently with optional caching."""
+    results: dict[str, int] = {}
+    to_fetch: list[str] = []
+    if cache is not None:
+        for lbl in labels:
+            if lbl in cache and 'volume' in cache[lbl]:
+                results[lbl] = cache[lbl]['volume']
+            else:
+                to_fetch.append(lbl)
+    else:
+        to_fetch = list(labels)
+
+    if to_fetch:
+        async with aiohttp.ClientSession() as session:
+            tasks = {
+                lbl: asyncio.create_task(search_volume(lbl, session))
+                for lbl in to_fetch
+            }
+            fetched = await asyncio.gather(*tasks.values())
+        for lbl, vol in zip(tasks.keys(), fetched):
+            results[lbl] = vol
+            if cache is not None:
+                cache.setdefault(lbl, {})['volume'] = vol
+    return results
 
 
 async def autocomplete_count(
@@ -482,15 +538,33 @@ async def autocomplete_count(
     return 0
 
 
-async def gather_autocomplete_counts(labels: list[str]) -> dict[str, int]:
-    """Fetch autocomplete counts for all labels concurrently."""
-    async with aiohttp.ClientSession() as session:
-        tasks = {
-            lbl: asyncio.create_task(autocomplete_count(lbl, session))
-            for lbl in labels
-        }
-        results = await asyncio.gather(*tasks.values())
-    return dict(zip(tasks.keys(), results))
+async def gather_autocomplete_counts(
+    labels: list[str], cache: dict[str, dict[str, int]] | None = None
+) -> dict[str, int]:
+    """Fetch autocomplete counts for all labels concurrently with optional caching."""
+    results: dict[str, int] = {}
+    to_fetch: list[str] = []
+    if cache is not None:
+        for lbl in labels:
+            if lbl in cache and 'auto' in cache[lbl]:
+                results[lbl] = cache[lbl]['auto']
+            else:
+                to_fetch.append(lbl)
+    else:
+        to_fetch = list(labels)
+
+    if to_fetch:
+        async with aiohttp.ClientSession() as session:
+            tasks = {
+                lbl: asyncio.create_task(autocomplete_count(lbl, session))
+                for lbl in to_fetch
+            }
+            fetched = await asyncio.gather(*tasks.values())
+        for lbl, val in zip(tasks.keys(), fetched):
+            results[lbl] = val
+            if cache is not None:
+                cache.setdefault(lbl, {})['auto'] = val
+    return results
 
 
 def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
@@ -583,6 +657,7 @@ def main():
         log_file=args.log_file,
         tld_cache_file=args.tld_cache_file,
         tld_cache_age=args.tld_cache_age,
+        metrics_cache_file=args.metrics_cache_file,
         force_refresh=args.force_refresh,
         dns_batch_size=args.dns_batch_size,
     )
