@@ -46,6 +46,7 @@ Available options:
 - `--metrics-cache-file` – path to the cached metrics file
 - `--force-refresh` – ignore cache and fetch TLDs again
 - `--dns-batch-size` – number of concurrent DNS lookups per batch
+- `--queue-size` – how many top-scoring combinations to retain before scanning
 
 The process may take a while as it scores thousands of potential domains and
 queries DNS. Progress information is printed to the console and recorded in
