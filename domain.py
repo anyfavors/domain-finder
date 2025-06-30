@@ -12,6 +12,8 @@ import argparse
 import asyncio
 import aiohttp
 from dataclasses import dataclass, asdict
+from typing import Sequence
+import numpy as np
 from wordfreq import zipf_frequency
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -268,16 +270,28 @@ class DomainFinder:
         labels = generate_labels(self.num_candidates, self.max_label_len)
 
         logging.info(f"Starter beregning af metrics for {len(labels)} labels")
-        volumes = await gather_search_volumes(labels, self.metrics_cache)
-        autos = await gather_autocomplete_counts(labels, self.metrics_cache)
-        label_stats = {}
-        for lbl in tqdm(labels, desc='Label metrics', unit='label'):
-            label_stats[lbl] = {
-                'ngram': ngram_score(lbl),
-                'volume': volumes.get(lbl, 0),
-                'auto': autos.get(lbl, 0),
-                'length_s': (self.max_label_len - len(lbl) + 1) / self.max_label_len,
+
+        volumes_task = gather_search_volumes(labels.tolist(), self.metrics_cache)
+        autos_task = gather_autocomplete_counts(labels.tolist(), self.metrics_cache)
+        volumes, autos = await asyncio.gather(volumes_task, autos_task)
+
+        ngram_scores = np.vectorize(ngram_score)(labels)
+        lengths = np.char.str_len(labels)
+        length_scores = (self.max_label_len - lengths + 1) / self.max_label_len
+        volume_arr = np.array([volumes.get(lbl, 0) for lbl in labels])
+        auto_arr = np.array([autos.get(lbl, 0) for lbl in labels])
+
+        label_stats = {
+            lbl: {
+                'ngram': ngram,
+                'volume': vol,
+                'auto': auto,
+                'length_s': ls,
             }
+            for lbl, ngram, vol, auto, ls in zip(
+                labels, ngram_scores, volume_arr, auto_arr, length_scores
+            )
+        }
         logging.info("Færdig med label metrics")
 
         tld_prices = {t: estimate_price(t) for t in tlds}
@@ -541,7 +555,7 @@ async def search_volume(label, session: aiohttp.ClientSession | None = None, ret
 
 
 async def gather_search_volumes(
-    labels: list[str], cache: dict[str, dict[str, int]] | None = None
+    labels: Sequence[str], cache: dict[str, dict[str, int]] | None = None
 ) -> dict[str, int]:
     """Fetch search volume for all labels concurrently with optional caching."""
     results: dict[str, int] = {}
@@ -614,7 +628,7 @@ async def autocomplete_count(
 
 
 async def gather_autocomplete_counts(
-    labels: list[str], cache: dict[str, dict[str, int]] | None = None
+    labels: Sequence[str], cache: dict[str, dict[str, int]] | None = None
 ) -> dict[str, int]:
     """Fetch autocomplete counts for all labels concurrently with optional caching."""
     results: dict[str, int] = {}
@@ -643,13 +657,13 @@ async def gather_autocomplete_counts(
 
 
 def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
-    """Generate a deterministic list of pronounceable labels.
+    """Generate a deterministic array of pronounceable labels.
 
     Args:
         n (int): Number of labels to produce.
 
     Returns:
-        list[str]: Generated labels in deterministic order.
+        numpy.ndarray: Generated labels in deterministic order.
     """
     letters = 'abcdefghijklmnopqrstuvwxyz'
     labels = []
@@ -661,9 +675,9 @@ def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
                 labels.append(cand)
                 if len(labels) >= n:
                     logging.info(f"Genereret {len(labels)} udtalelige labels")
-                    return labels
+                    return np.array(labels)
     logging.info(f"Genereret {len(labels)} udtalelige labels")
-    return labels
+    return np.array(labels)
 
 
 def normalize(vals):

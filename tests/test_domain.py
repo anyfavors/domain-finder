@@ -27,15 +27,15 @@ def test_estimate_price():
 
 def test_generate_labels():
     labels = domain.generate_labels(5)
-    assert labels == ["a", "e", "i", "o", "u"]
+    assert labels.tolist() == ["a", "e", "i", "o", "u"]
     assert len(set(labels)) == len(labels)
-    for lbl in labels:
+    for lbl in labels.tolist():
         assert domain.is_pronounceable(lbl)
         assert 1 <= len(lbl) <= domain.MAX_LABEL_LEN
 
 
 def test_generate_labels_deterministic():
-    assert domain.generate_labels(6) == domain.generate_labels(6)
+    assert domain.generate_labels(6).tolist() == domain.generate_labels(6).tolist()
 
 
 def test_fetch_tlds_cached(tmp_path):
