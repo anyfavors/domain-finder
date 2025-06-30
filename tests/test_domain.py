@@ -104,3 +104,12 @@ def test_autocomplete_cache(monkeypatch):
     res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
     assert res2 == {"abc": 7}
 
+
+def test_candidate_serialization_roundtrip():
+    cand = domain.Candidate("foo", "com", 10, 1.0, 2, 3, 0.5, 0)
+    cand.score = 4.2
+    data = domain.candidate_to_dict(cand)
+    new = domain.candidate_from_dict(data)
+    assert new == cand
+    assert hasattr(new, "score") and new.score == cand.score
+

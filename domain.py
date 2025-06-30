@@ -11,6 +11,7 @@ import logging
 import argparse
 import asyncio
 import aiohttp
+from dataclasses import dataclass, asdict
 from wordfreq import zipf_frequency
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -31,6 +32,47 @@ METRICS_CACHE_FILE = 'metrics.json'
 
 throttle = 0.05  # pause mellem DNS-tjek
 DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
+
+
+@dataclass
+class Candidate:
+    """Domain candidate data container."""
+
+    name: str
+    tld: str
+    price: int
+    ngram: float
+    volume: int
+    auto: int
+    length_s: float
+    idx: int
+
+
+def candidate_to_dict(c: "Candidate") -> dict:
+    """Convert a ``Candidate`` to a serializable dictionary."""
+
+    data = asdict(c)
+    if hasattr(c, "score"):
+        data["score"] = c.score
+    return data
+
+
+def candidate_from_dict(data: dict) -> "Candidate":
+    """Create a ``Candidate`` instance from a dictionary."""
+
+    c = Candidate(
+        name=data["name"],
+        tld=data["tld"],
+        price=data["price"],
+        ngram=data["ngram"],
+        volume=data["volume"],
+        auto=data["auto"],
+        length_s=data["length_s"],
+        idx=data["idx"],
+    )
+    if "score" in data:
+        c.score = data["score"]
+    return c
 
 
 class DomainFinder:
@@ -69,7 +111,7 @@ class DomainFinder:
         self.metrics_cache: dict[str, dict[str, int]] = {}
 
         self.processed: set[tuple[str, str]] = set()
-        self.found: list[dict] = []
+        self.found: list[Candidate] = []
         self.session = requests.Session()
         retries = Retry(
             total=5,
@@ -124,25 +166,26 @@ class DomainFinder:
         try:
             with open(self.jsonl_file, 'r') as f:
                 for line in f:
-                    rec = json.loads(line)
-                    self.processed.add((rec['name'], rec['tld']))
-                    self.found.append(rec)
+                    rec_dict = json.loads(line)
+                    cand = candidate_from_dict(rec_dict)
+                    self.processed.add((cand.name, cand.tld))
+                    self.found.append(cand)
             logging.info(
                 f"Indlæste {len(self.found)} gemte domæner fra {self.jsonl_file}"
             )
         except FileNotFoundError:
             logging.info("Ingen tidligere data. Starter forfra.")
 
-    def save_record(self, rec: dict) -> None:
+    def save_record(self, rec: Candidate) -> None:
         """Append a domain record to the JSONL log file."""
         with open(self.jsonl_file, 'a') as f:
-            f.write(json.dumps(rec) + '\n')
+            f.write(json.dumps(candidate_to_dict(rec)) + '\n')
 
-    def save_sorted_list(self, sorted_list: list[dict]) -> None:
+    def save_sorted_list(self, sorted_list: list[Candidate]) -> None:
         """Write the sorted candidate list to disk."""
         with open(self.sorted_list_file, 'w') as f:
             for r in sorted_list:
-                f.write(json.dumps(r) + '\n')
+                f.write(json.dumps(candidate_to_dict(r)) + '\n')
         logging.info(f"Gemte sorteret liste til {self.sorted_list_file}")
 
     # -- Metrics cache helpers -- #
@@ -170,12 +213,12 @@ class DomainFinder:
         except Exception as e:
             logging.error(f"Kunne ikke gemme metrics cache: {e}")
 
-    def write_html(self, results: list[dict]) -> None:
+    def write_html(self, results: list[Candidate]) -> None:
         """Generate and write HTML output for available domains."""
         rows = ''.join(
-            f"<tr><td>{r['name']}</td><td>{r['tld']}</td><td>{r['score']}</td>"
-            f"<td>{r['price']}</td><td>{r['ngram']:.2f}</td>"
-            f"<td>{r['volume']}</td><td>{r['auto']}</td></tr>\n"
+            f"<tr><td>{r.name}</td><td>{r.tld}</td><td>{getattr(r, 'score', 0)}"
+            f"</td><td>{r.price}</td><td>{r.ngram:.2f}</td>"
+            f"<td>{r.volume}</td><td>{r.auto}</td></tr>\n"
             for r in results
         )
         html = f"""<!DOCTYPE html>
@@ -237,29 +280,29 @@ class DomainFinder:
 
         total = len(labels) * len(tlds)
         logging.info(f"Starter bygning af {total} kombinationer")
-        raw = []
+        raw: list[Candidate] = []
         for lbl in tqdm(labels, desc='Bygger rå', unit='label'):
             stats = label_stats[lbl]
             for tld in tlds:
                 raw.append(
-                    {
-                        'name': lbl,
-                        'tld': tld,
-                        'price': tld_prices[tld],
-                        'ngram': stats['ngram'],
-                        'volume': stats['volume'],
-                        'auto': stats['auto'],
-                        'length_s': stats['length_s'],
-                        'idx': len(raw),
-                    }
+                    Candidate(
+                        name=lbl,
+                        tld=tld,
+                        price=tld_prices[tld],
+                        ngram=stats['ngram'],
+                        volume=stats['volume'],
+                        auto=stats['auto'],
+                        length_s=stats['length_s'],
+                        idx=len(raw),
+                    )
                 )
         logging.info(f"Datagrundlag bygget: {len(raw)} kombinationer")
 
         logging.info("Starter parallel scoring...")
-        pn = normalize([r['price'] for r in raw])
-        nn = normalize([r['ngram'] for r in raw])
-        vn = normalize([r['volume'] for r in raw])
-        an = normalize([r['auto'] for r in raw])
+        pn = normalize([r.price for r in raw])
+        nn = normalize([r.ngram for r in raw])
+        vn = normalize([r.volume for r in raw])
+        an = normalize([r.auto for r in raw])
         with Pool(processes=cpu_count()) as pool:
             args = [(r, pn, nn, vn, an) for r in raw]
             for idx, score in tqdm(
@@ -268,12 +311,12 @@ class DomainFinder:
                 desc='Scoring',
                 unit='item',
             ):
-                raw[idx]['score'] = score
+                raw[idx].score = score
         logging.info("Parallel scoring færdig")
 
         logging.info("Starter sortering af datagrundlag...")
         start_sort = time.time()
-        raw.sort(key=lambda x: x['score'], reverse=True)
+        raw.sort(key=lambda x: getattr(x, 'score', 0), reverse=True)
         logging.info(
             f"Sortering færdig på {time.time() - start_sort:.2f} sekunder"
         )
@@ -284,26 +327,26 @@ class DomainFinder:
         logging.info("Scanning færdig.")
         self.save_metrics_cache()
 
-    async def _check_record(self, r: dict) -> None:
+    async def _check_record(self, r: Candidate) -> None:
         """Helper to check a single record and save if available."""
-        key = (r['name'], r['tld'])
-        domain = f"{r['name']}.{r['tld']}"
+        key = (r.name, r.tld)
+        domain = f"{r.name}.{r.tld}"
         if await dns_available(domain):
-            rec = r.copy()
+            rec = candidate_from_dict(candidate_to_dict(r))
             self.found.append(rec)
             self.processed.add(key)
             self.save_record(rec)
             self.write_html(self.found)
-            logging.info(f"Fundet ledigt: {domain} Score: {r['score']}")
+            logging.info(f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}")
 
-    async def scan_domains(self, raw: list[dict]) -> None:
+    async def scan_domains(self, raw: list[Candidate]) -> None:
         """Check domain availability for all records in batches."""
         for i in tqdm(range(0, len(raw), self.dns_batch_size), desc='DNS-scanning', unit='batch'):
             batch = raw[i : i + self.dns_batch_size]
             tasks = [
                 asyncio.create_task(self._check_record(r))
                 for r in batch
-                if (r['name'], r['tld']) not in self.processed
+                if (r.name, r.tld) not in self.processed
             ]
             if tasks:
                 await asyncio.gather(*tasks)
@@ -634,14 +677,14 @@ def compute_score(args):
     """
     r, pn, nn, vn, an = args
     score = round(
-        0.3 * r['length_s']
-        + 0.2 * pn[r['idx']]
-        + 0.2 * nn[r['idx']]
-        + 0.15 * vn[r['idx']]
-        + 0.15 * an[r['idx']],
+        0.3 * r.length_s
+        + 0.2 * pn[r.idx]
+        + 0.2 * nn[r.idx]
+        + 0.15 * vn[r.idx]
+        + 0.15 * an[r.idx],
         4,
     )
-    return (r['idx'], score)
+    return (r.idx, score)
 
 # --- Hovedprogram --- #
 def main():
