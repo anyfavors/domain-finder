@@ -32,6 +32,8 @@ METRICS_CACHE_FILE = 'metrics.json'
 
 throttle = 0.05  # pause mellem DNS-tjek
 DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
+QUEUE_SIZE = 10000  # behold kun de bedste N kombinationer
+SCORE_BATCH_SIZE = 1000  # antal records der scores ad gangen
 
 
 @dataclass
@@ -93,6 +95,7 @@ class DomainFinder:
         force_refresh: bool = False,
         pause: float = throttle,
         dns_batch_size: int = DNS_BATCH_SIZE,
+        queue_size: int = QUEUE_SIZE,
     ) -> None:
         self.num_candidates = num_candidates
         self.max_label_len = max_label_len
@@ -103,6 +106,7 @@ class DomainFinder:
         self.log_file = log_file
         self.throttle = pause
         self.dns_batch_size = dns_batch_size
+        self.queue_size = queue_size
         self.tld_cache_file = tld_cache_file
         self.tld_cache_age = tld_cache_age
         self.metrics_cache_file = metrics_cache_file
@@ -279,13 +283,29 @@ class DomainFinder:
         tld_prices = {t: estimate_price(t) for t in tlds}
 
         total = len(labels) * len(tlds)
-        logging.info(f"Starter bygning af {total} kombinationer")
-        raw: list[Candidate] = []
-        for lbl in tqdm(labels, desc='Bygger rå', unit='label'):
-            stats = label_stats[lbl]
-            for tld in tlds:
-                raw.append(
-                    Candidate(
+        logging.info(f"Scorer {total} kombinationer i batches")
+
+        price_vals = list(tld_prices.values())
+        ngram_vals = [v['ngram'] for v in label_stats.values()]
+        volume_vals = [v['volume'] for v in label_stats.values()]
+        auto_vals = [v['auto'] for v in label_stats.values()]
+
+        min_price, max_price = min(price_vals), max(price_vals)
+        min_ngram, max_ngram = min(ngram_vals), max(ngram_vals)
+        min_volume, max_volume = min(volume_vals), max(volume_vals)
+        min_auto, max_auto = min(auto_vals), max(auto_vals)
+
+        import heapq
+
+        heap: list[tuple[float, Candidate]] = []
+        batch_args = []
+        batch_cands = []
+        idx = 0
+        with Pool(processes=cpu_count()) as pool:
+            for lbl in tqdm(labels, desc='Scoring', unit='label'):
+                stats = label_stats[lbl]
+                for tld in tlds:
+                    cand = Candidate(
                         name=lbl,
                         tld=tld,
                         price=tld_prices[tld],
@@ -293,33 +313,43 @@ class DomainFinder:
                         volume=stats['volume'],
                         auto=stats['auto'],
                         length_s=stats['length_s'],
-                        idx=len(raw),
+                        idx=idx,
                     )
-                )
-        logging.info(f"Datagrundlag bygget: {len(raw)} kombinationer")
+                    idx += 1
+                    batch_cands.append(cand)
+                    batch_args.append(
+                        (
+                            cand,
+                            min_price,
+                            max_price,
+                            min_ngram,
+                            max_ngram,
+                            min_volume,
+                            max_volume,
+                            min_auto,
+                            max_auto,
+                        )
+                    )
 
-        logging.info("Starter parallel scoring...")
-        pn = normalize([r.price for r in raw])
-        nn = normalize([r.ngram for r in raw])
-        vn = normalize([r.volume for r in raw])
-        an = normalize([r.auto for r in raw])
-        with Pool(processes=cpu_count()) as pool:
-            args = [(r, pn, nn, vn, an) for r in raw]
-            for idx, score in tqdm(
-                pool.imap_unordered(compute_score, args),
-                total=len(raw),
-                desc='Scoring',
-                unit='item',
-            ):
-                raw[idx].score = score
-        logging.info("Parallel scoring færdig")
+                    if len(batch_args) >= SCORE_BATCH_SIZE:
+                        for c, score in zip(batch_cands, pool.map(compute_score, batch_args)):
+                            c.score = score
+                            if len(heap) < self.queue_size:
+                                heapq.heappush(heap, (score, c))
+                            elif score > heap[0][0]:
+                                heapq.heapreplace(heap, (score, c))
+                        batch_args.clear()
+                        batch_cands.clear()
 
-        logging.info("Starter sortering af datagrundlag...")
-        start_sort = time.time()
-        raw.sort(key=lambda x: getattr(x, 'score', 0), reverse=True)
-        logging.info(
-            f"Sortering færdig på {time.time() - start_sort:.2f} sekunder"
-        )
+            if batch_args:
+                for c, score in zip(batch_cands, pool.map(compute_score, batch_args)):
+                    c.score = score
+                    if len(heap) < self.queue_size:
+                        heapq.heappush(heap, (score, c))
+                    elif score > heap[0][0]:
+                        heapq.heapreplace(heap, (score, c))
+
+        raw = [c for _, c in sorted(heap, key=lambda x: x[0], reverse=True)]
         self.save_sorted_list(raw)
 
         logging.info("Starter DNS-scanning af sorteret liste...")
@@ -385,6 +415,8 @@ def parse_args():
                         help='force refresh of TLD list')
     parser.add_argument('--dns-batch-size', type=int, default=DNS_BATCH_SIZE,
                         help='number of concurrent DNS lookups')
+    parser.add_argument('--queue-size', type=int, default=QUEUE_SIZE,
+                        help='keep only top N scored combinations')
     return parser.parse_args()
 
 
@@ -667,24 +699,33 @@ async def dns_available(domain: str) -> bool:
 
 # --- Score funktion for multiprocessing --- #
 def compute_score(args):
-    """Compute the weighted score for a domain candidate.
+    """Compute the weighted score for a domain candidate."""
 
-    Args:
-        args (tuple): Record and normalized metric arrays.
+    (
+        r,
+        min_price,
+        max_price,
+        min_ngram,
+        max_ngram,
+        min_volume,
+        max_volume,
+        min_auto,
+        max_auto,
+    ) = args
 
-    Returns:
-        tuple: Index of the record and calculated score.
-    """
-    r, pn, nn, vn, an = args
+    def norm(val, mn, mx):
+        return (val - mn) / (mx - mn) if mx > mn else 0
+
+    pn = norm(r.price, min_price, max_price)
+    nn = norm(r.ngram, min_ngram, max_ngram)
+    vn = norm(r.volume, min_volume, max_volume)
+    an = norm(r.auto, min_auto, max_auto)
+
     score = round(
-        0.3 * r.length_s
-        + 0.2 * pn[r.idx]
-        + 0.2 * nn[r.idx]
-        + 0.15 * vn[r.idx]
-        + 0.15 * an[r.idx],
+        0.3 * r.length_s + 0.2 * pn + 0.2 * nn + 0.15 * vn + 0.15 * an,
         4,
     )
-    return (r.idx, score)
+    return score
 
 # --- Hovedprogram --- #
 def main():
@@ -703,6 +744,7 @@ def main():
         metrics_cache_file=args.metrics_cache_file,
         force_refresh=args.force_refresh,
         dns_batch_size=args.dns_batch_size,
+        queue_size=args.queue_size,
     )
     asyncio.run(finder.run())
 
