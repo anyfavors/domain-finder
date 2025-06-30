@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Domain Finder output files
+domains.html
+results.jsonl
+sorted_domains.jsonl
+domain_scanner.log
+
+# Miscellaneous
+.DS_Store
