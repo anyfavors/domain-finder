@@ -66,3 +66,24 @@ Install pytest and run the suite from the repository root:
 pip install pytest
 pytest
 ```
+
+## Contributing
+
+Code style is checked using **Black** and **Flake8**. A `pre-commit` hook is
+provided to run these tools automatically.
+
+Install the additional development dependencies and activate the hook:
+
+```bash
+pip install black flake8 pre-commit
+pre-commit install
+```
+
+You can run the checks manually with:
+
+```bash
+pre-commit run --all-files
+```
+
+Formatting can also be applied directly using `black .`, and linting can be
+invoked with `flake8`.

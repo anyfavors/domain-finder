@@ -21,10 +21,10 @@ from multiprocessing import Pool, cpu_count
 NUM_CANDIDATES = 2500
 MAX_LABEL_LEN = 4
 TOP_TLD_COUNT = 200
-HTML_OUT = 'domains.html'
-JSONL_FILE = 'results.jsonl'
-LOG_FILE = 'domain_scanner.log'
-SORTED_LIST_FILE = 'sorted_domains.jsonl'
+HTML_OUT = "domains.html"
+JSONL_FILE = "results.jsonl"
+LOG_FILE = "domain_scanner.log"
+SORTED_LIST_FILE = "sorted_domains.jsonl"
 throttle = 0.05  # pause mellem DNS-tjek
 
 
@@ -35,27 +35,43 @@ def parse_args():
         argparse.Namespace: Object with parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Generate and score domain names")
-    parser.add_argument('--num-candidates', type=int, default=NUM_CANDIDATES,
-                        help='number of random labels to generate')
-    parser.add_argument('--max-label-len', type=int, default=MAX_LABEL_LEN,
-                        help='maximum length of a label')
-    parser.add_argument('--top-tld-count', type=int, default=TOP_TLD_COUNT,
-                        help='number of TLDs to include')
-    parser.add_argument('--html-out', default=HTML_OUT,
-                        help='path to HTML results file')
-    parser.add_argument('--jsonl-file', default=JSONL_FILE,
-                        help='path to JSONL results file')
-    parser.add_argument('--sorted-file', default=SORTED_LIST_FILE,
-                        help='path to sorted list file')
-    parser.add_argument('--log-file', default=LOG_FILE,
-                        help='path to log file')
+    parser.add_argument(
+        "--num-candidates",
+        type=int,
+        default=NUM_CANDIDATES,
+        help="number of random labels to generate",
+    )
+    parser.add_argument(
+        "--max-label-len",
+        type=int,
+        default=MAX_LABEL_LEN,
+        help="maximum length of a label",
+    )
+    parser.add_argument(
+        "--top-tld-count",
+        type=int,
+        default=TOP_TLD_COUNT,
+        help="number of TLDs to include",
+    )
+    parser.add_argument(
+        "--html-out", default=HTML_OUT, help="path to HTML results file"
+    )
+    parser.add_argument(
+        "--jsonl-file", default=JSONL_FILE, help="path to JSONL results file"
+    )
+    parser.add_argument(
+        "--sorted-file", default=SORTED_LIST_FILE, help="path to sorted list file"
+    )
+    parser.add_argument("--log-file", default=LOG_FILE, help="path to log file")
     return parser.parse_args()
+
 
 # Checkpointing og fundne domæner
 processed = set()
 found = []
 
 # Opsæt logging konfigureres i main()
+
 
 # Ctrl-C håndtering
 def graceful_exit(signum, frame):
@@ -65,24 +81,39 @@ def graceful_exit(signum, frame):
         signum (int): Signal number.
         frame (FrameType): Current stack frame.
     """
-    logging.info('Afslutter og gemmer HTML...')
+    logging.info("Afslutter og gemmer HTML...")
     write_html(found)
     sys.exit(0)
 
+
 # HTTP-session med backoff
-pytrends = TrendReq(hl='en-US', tz=360)
+pytrends = TrendReq(hl="en-US", tz=360)
 session = requests.Session()
-retries = Retry(total=5, backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-                respect_retry_after_header=True)
-session.mount('https://', HTTPAdapter(max_retries=retries))
+retries = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    respect_retry_after_header=True,
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
 
 # Pris-estimater (USD)
-PRICE_OVERRIDES = {'com': 12, 'net': 10, 'io': 35, 'co': 30,
-                   'ai': 60, 'app': 20, 'tech': 40, 'org': 10,
-                   'info': 8, 'biz': 7, 'dk': 8}
+PRICE_OVERRIDES = {
+    "com": 12,
+    "net": 10,
+    "io": 35,
+    "co": 30,
+    "ai": 60,
+    "app": 20,
+    "tech": 40,
+    "org": 10,
+    "info": 8,
+    "biz": 7,
+    "dk": 8,
+}
 
 # --- Hjælpefunktioner --- #
+
 
 def load_progress():
     """Load processed domains from disk into memory.
@@ -91,10 +122,10 @@ def load_progress():
         None
     """
     try:
-        with open(JSONL_FILE, 'r') as f:
+        with open(JSONL_FILE, "r") as f:
             for line in f:
                 rec = json.loads(line)
-                processed.add((rec['name'], rec['tld']))
+                processed.add((rec["name"], rec["tld"]))
                 found.append(rec)
         logging.info(f"Indlæste {len(found)} gemte domæner fra {JSONL_FILE}")
     except FileNotFoundError:
@@ -107,8 +138,8 @@ def save_record(rec):
     Args:
         rec (dict): Record to persist.
     """
-    with open(JSONL_FILE, 'a') as f:
-        f.write(json.dumps(rec) + '\n')
+    with open(JSONL_FILE, "a") as f:
+        f.write(json.dumps(rec) + "\n")
 
 
 def fetch_tlds():
@@ -117,8 +148,8 @@ def fetch_tlds():
     Returns:
         list[str]: Filtered list of top TLDs.
     """
-    resp = session.get('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', timeout=10)
-    tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
+    resp = session.get("https://data.iana.org/TLD/tlds-alpha-by-domain.txt", timeout=10)
+    tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith("#")]
     ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
     top = sorted(ascii_tlds, key=len)[:TOP_TLD_COUNT]
     logging.info(f"Valgt {len(top)} vestlige, ASCII-only TLD'er")
@@ -134,7 +165,7 @@ def is_pronounceable(s):
     Returns:
         bool: True if pronounceable.
     """
-    v = set('aeiouy')
+    v = set("aeiouy")
     if not any(c in v for c in s):
         return False
     run = 0
@@ -166,7 +197,7 @@ def ngram_score(label):
     Returns:
         float: Zipf frequency score.
     """
-    return zipf_frequency(label, 'en')
+    return zipf_frequency(label, "en")
 
 
 def search_volume(label):
@@ -179,7 +210,7 @@ def search_volume(label):
         int: Maximum search volume over the last week.
     """
     try:
-        pytrends.build_payload([label], timeframe='now 7-d')
+        pytrends.build_payload([label], timeframe="now 7-d")
         df = pytrends.interest_over_time()
         return int(df[label].max()) if not df.empty else 0
     except:
@@ -196,8 +227,11 @@ def autocomplete_count(label):
         int: Suggestion count or 0 on failure.
     """
     try:
-        r = session.get('https://suggestqueries.google.com/complete/search',
-                        params={'client': 'firefox', 'q': label}, timeout=3)
+        r = session.get(
+            "https://suggestqueries.google.com/complete/search",
+            params={"client": "firefox", "q": label},
+            timeout=3,
+        )
         return len(r.json()[1])
     except:
         return 0
@@ -212,13 +246,13 @@ def generate_labels(n):
     Returns:
         list[str]: Generated labels.
     """
-    letters = 'abcdefghijklmnopqrstuvwxyz'
+    letters = "abcdefghijklmnopqrstuvwxyz"
     labels = set()
     logging.info(f"Starter generering af {n} labels")
-    for _ in tqdm(range(n), desc='Labels genereret', unit='label'):
+    for _ in tqdm(range(n), desc="Labels genereret", unit="label"):
         while True:
             length = random.randint(1, MAX_LABEL_LEN)
-            cand = ''.join(random.choice(letters) for _ in range(length))
+            cand = "".join(random.choice(letters) for _ in range(length))
             if is_pronounceable(cand) and cand not in labels:
                 labels.add(cand)
                 break
@@ -261,9 +295,9 @@ def save_sorted_list(sorted_list):
     Args:
         sorted_list (list[dict]): Domains with scores.
     """
-    with open(SORTED_LIST_FILE, 'w') as f:
+    with open(SORTED_LIST_FILE, "w") as f:
         for r in sorted_list:
-            f.write(json.dumps(r) + '\n')
+            f.write(json.dumps(r) + "\n")
     logging.info(f"Gemte sorteret liste til {SORTED_LIST_FILE}")
 
 
@@ -273,7 +307,7 @@ def write_html(results):
     Args:
         results (list[dict]): Records of available domains.
     """
-    rows = ''.join(
+    rows = "".join(
         f"<tr><td>{r['name']}</td><td>{r['tld']}</td><td>{r['score']}</td><td>{r['price']}</td>"
         f"<td>{r['ngram']:.2f}</td><td>{r['volume']}</td><td>{r['auto']}</td></tr>\n"
         for r in results
@@ -292,8 +326,9 @@ def write_html(results):
 <script src='https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js'></script>
 <script>$(document).ready(()=>$('#domains').DataTable({pageLength:10}));</script>
 </body></html>"""
-    with open(HTML_OUT, 'w') as f:
+    with open(HTML_OUT, "w") as f:
         f.write(html)
+
 
 # --- Score funktion for multiprocessing --- #
 def compute_score(args):
@@ -307,14 +342,15 @@ def compute_score(args):
     """
     r, pn, nn, vn, an = args
     score = round(
-        0.3 * r['length_s']
-        + 0.2 * pn[r['idx']]
-        + 0.2 * nn[r['idx']]
-        + 0.15 * vn[r['idx']]
-        + 0.15 * an[r['idx']],
+        0.3 * r["length_s"]
+        + 0.2 * pn[r["idx"]]
+        + 0.2 * nn[r["idx"]]
+        + 0.15 * vn[r["idx"]]
+        + 0.15 * an[r["idx"]],
         4,
     )
-    return (r['idx'], score)
+    return (r["idx"], score)
+
 
 # --- Hovedprogram --- #
 def main():
@@ -338,11 +374,8 @@ def main():
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s %(levelname)s: %(message)s',
-        handlers=[
-            logging.FileHandler(LOG_FILE),
-            logging.StreamHandler(sys.stdout)
-        ]
+        format="%(asctime)s %(levelname)s: %(message)s",
+        handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
     )
 
     signal.signal(signal.SIGINT, graceful_exit)
@@ -354,12 +387,12 @@ def main():
     # Beregn label metrics
     logging.info(f"Starter beregning af metrics for {len(labels)} labels")
     label_stats = {}
-    for lbl in tqdm(labels, desc='Label metrics', unit='label'):
+    for lbl in tqdm(labels, desc="Label metrics", unit="label"):
         label_stats[lbl] = {
-            'ngram': ngram_score(lbl),
-            'volume': search_volume(lbl),
-            'auto': autocomplete_count(lbl),
-            'length_s': (MAX_LABEL_LEN - len(lbl) + 1) / MAX_LABEL_LEN
+            "ngram": ngram_score(lbl),
+            "volume": search_volume(lbl),
+            "auto": autocomplete_count(lbl),
+            "length_s": (MAX_LABEL_LEN - len(lbl) + 1) / MAX_LABEL_LEN,
         }
     logging.info("Færdig med label metrics")
 
@@ -370,44 +403,51 @@ def main():
     total = len(labels) * len(tlds)
     logging.info(f"Starter bygning af {total} kombinationer")
     raw = []
-    for lbl in tqdm(labels, desc='Bygger rå', unit='label'):
+    for lbl in tqdm(labels, desc="Bygger rå", unit="label"):
         stats = label_stats[lbl]
         for tld in tlds:
-            raw.append({
-                'name': lbl,
-                'tld': tld,
-                'price': tld_prices[tld],
-                'ngram': stats['ngram'],
-                'volume': stats['volume'],
-                'auto': stats['auto'],
-                'length_s': stats['length_s'],
-                'idx': len(raw)
-            })
+            raw.append(
+                {
+                    "name": lbl,
+                    "tld": tld,
+                    "price": tld_prices[tld],
+                    "ngram": stats["ngram"],
+                    "volume": stats["volume"],
+                    "auto": stats["auto"],
+                    "length_s": stats["length_s"],
+                    "idx": len(raw),
+                }
+            )
     logging.info(f"Datagrundlag bygget: {len(raw)} kombinationer")
 
     # Parallel scoring
     logging.info("Starter parallel scoring...")
-    pn = normalize([r['price'] for r in raw])
-    nn = normalize([r['ngram'] for r in raw])
-    vn = normalize([r['volume'] for r in raw])
-    an = normalize([r['auto'] for r in raw])
+    pn = normalize([r["price"] for r in raw])
+    nn = normalize([r["ngram"] for r in raw])
+    vn = normalize([r["volume"] for r in raw])
+    an = normalize([r["auto"] for r in raw])
     with Pool(processes=cpu_count()) as pool:
         args = [(r, pn, nn, vn, an) for r in raw]
-        for idx, score in tqdm(pool.imap_unordered(compute_score, args), total=len(raw), desc='Scoring', unit='item'):
-            raw[idx]['score'] = score
+        for idx, score in tqdm(
+            pool.imap_unordered(compute_score, args),
+            total=len(raw),
+            desc="Scoring",
+            unit="item",
+        ):
+            raw[idx]["score"] = score
     logging.info("Parallel scoring færdig")
 
     # Sort og gem
     logging.info("Starter sortering af datagrundlag...")
     start_sort = time.time()
-    raw.sort(key=lambda x: x['score'], reverse=True)
+    raw.sort(key=lambda x: x["score"], reverse=True)
     logging.info(f"Sortering færdig på {time.time() - start_sort:.2f} sekunder")
     save_sorted_list(raw)
 
     # DNS-scanning
     logging.info("Starter DNS-scanning af sorteret liste...")
-    for r in tqdm(raw, desc='DNS-scanning', unit='domæne'):
-        key = (r['name'], r['tld'])
+    for r in tqdm(raw, desc="DNS-scanning", unit="domæne"):
+        key = (r["name"], r["tld"])
         if key in processed:
             continue
         domain = f"{r['name']}.{r['tld']}"
@@ -421,5 +461,6 @@ def main():
         time.sleep(throttle)
     logging.info("Scanning færdig.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
