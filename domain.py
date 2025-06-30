@@ -9,6 +9,7 @@ import json
 import signal
 import sys
 import logging
+import argparse
 from wordfreq import zipf_frequency
 from pytrends.request import TrendReq
 from requests.adapters import HTTPAdapter
@@ -26,26 +27,36 @@ LOG_FILE = 'domain_scanner.log'
 SORTED_LIST_FILE = 'sorted_domains.jsonl'
 throttle = 0.05  # pause mellem DNS-tjek
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate and score domain names")
+    parser.add_argument('--num-candidates', type=int, default=NUM_CANDIDATES,
+                        help='number of random labels to generate')
+    parser.add_argument('--max-label-len', type=int, default=MAX_LABEL_LEN,
+                        help='maximum length of a label')
+    parser.add_argument('--top-tld-count', type=int, default=TOP_TLD_COUNT,
+                        help='number of TLDs to include')
+    parser.add_argument('--html-out', default=HTML_OUT,
+                        help='path to HTML results file')
+    parser.add_argument('--jsonl-file', default=JSONL_FILE,
+                        help='path to JSONL results file')
+    parser.add_argument('--sorted-file', default=SORTED_LIST_FILE,
+                        help='path to sorted list file')
+    parser.add_argument('--log-file', default=LOG_FILE,
+                        help='path to log file')
+    return parser.parse_args()
+
 # Checkpointing og fundne domæner
 processed = set()
 found = []
 
-# Opsæt logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Opsæt logging konfigureres i main()
 
 # Ctrl-C håndtering
 def graceful_exit(signum, frame):
     logging.info('Afslutter og gemmer HTML...')
     write_html(found)
     sys.exit(0)
-signal.signal(signal.SIGINT, graceful_exit)
 
 # HTTP-session med backoff
 pytrends = TrendReq(hl='en-US', tz=360)
@@ -192,6 +203,30 @@ def compute_score(args):
 
 # --- Hovedprogram --- #
 def main():
+    args = parse_args()
+
+    global NUM_CANDIDATES, MAX_LABEL_LEN, TOP_TLD_COUNT
+    global HTML_OUT, JSONL_FILE, LOG_FILE, SORTED_LIST_FILE
+
+    NUM_CANDIDATES = args.num_candidates
+    MAX_LABEL_LEN = args.max_label_len
+    TOP_TLD_COUNT = args.top_tld_count
+    HTML_OUT = args.html_out
+    JSONL_FILE = args.jsonl_file
+    LOG_FILE = args.log_file
+    SORTED_LIST_FILE = args.sorted_file
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s: %(message)s',
+        handlers=[
+            logging.FileHandler(LOG_FILE),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    signal.signal(signal.SIGINT, graceful_exit)
+
     load_progress()
     tlds = fetch_tlds()
     labels = generate_labels(NUM_CANDIDATES)
