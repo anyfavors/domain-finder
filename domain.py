@@ -29,6 +29,7 @@ TLD_CACHE_FILE = 'tlds.json'
 TLD_CACHE_MAX_AGE = 86400  # one day in seconds
 
 throttle = 0.05  # pause mellem DNS-tjek
+DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
 
 
 class DomainFinder:
@@ -47,6 +48,7 @@ class DomainFinder:
         tld_cache_age: int = TLD_CACHE_MAX_AGE,
         force_refresh: bool = False,
         pause: float = throttle,
+        dns_batch_size: int = DNS_BATCH_SIZE,
     ) -> None:
         self.num_candidates = num_candidates
         self.max_label_len = max_label_len
@@ -56,6 +58,7 @@ class DomainFinder:
         self.sorted_list_file = sorted_list_file
         self.log_file = log_file
         self.throttle = pause
+        self.dns_batch_size = dns_batch_size
         self.tld_cache_file = tld_cache_file
         self.tld_cache_age = tld_cache_age
         self.force_refresh = force_refresh
@@ -245,20 +248,33 @@ class DomainFinder:
         self.save_sorted_list(raw)
 
         logging.info("Starter DNS-scanning af sorteret liste...")
-        for r in tqdm(raw, desc='DNS-scanning', unit='domæne'):
-            key = (r['name'], r['tld'])
-            if key in self.processed:
-                continue
-            domain = f"{r['name']}.{r['tld']}"
-            if dns_available(domain):
-                rec = r.copy()
-                self.found.append(rec)
-                self.processed.add(key)
-                self.save_record(rec)
-                self.write_html(self.found)
-                logging.info(f"Fundet ledigt: {domain} Score: {r['score']}")
-            time.sleep(self.throttle)
+        await self.scan_domains(raw)
         logging.info("Scanning færdig.")
+
+    async def _check_record(self, r: dict) -> None:
+        """Helper to check a single record and save if available."""
+        key = (r['name'], r['tld'])
+        domain = f"{r['name']}.{r['tld']}"
+        if await dns_available(domain):
+            rec = r.copy()
+            self.found.append(rec)
+            self.processed.add(key)
+            self.save_record(rec)
+            self.write_html(self.found)
+            logging.info(f"Fundet ledigt: {domain} Score: {r['score']}")
+
+    async def scan_domains(self, raw: list[dict]) -> None:
+        """Check domain availability for all records in batches."""
+        for i in tqdm(range(0, len(raw), self.dns_batch_size), desc='DNS-scanning', unit='batch'):
+            batch = raw[i : i + self.dns_batch_size]
+            tasks = [
+                asyncio.create_task(self._check_record(r))
+                for r in batch
+                if (r['name'], r['tld']) not in self.processed
+            ]
+            if tasks:
+                await asyncio.gather(*tasks)
+            await asyncio.sleep(self.throttle)
 
 
 
@@ -289,6 +305,8 @@ def parse_args():
                         help='maximum cache age in seconds')
     parser.add_argument('--force-refresh', action='store_true',
                         help='force refresh of TLD list')
+    parser.add_argument('--dns-batch-size', type=int, default=DNS_BATCH_SIZE,
+                        help='number of concurrent DNS lookups')
     return parser.parse_args()
 
 
@@ -512,17 +530,18 @@ def normalize(vals):
     return [(v - mn) / (mx - mn) if mx > mn else 0 for v in vals]
 
 
-def dns_available(domain):
-    """Check whether a domain name resolves.
+async def dns_available(domain: str) -> bool:
+    """Asynchronously check whether a domain name resolves.
 
     Args:
-        domain (str): Full domain to query.
+        domain: Full domain to query.
 
     Returns:
-        bool: True if no DNS record was found.
+        True if no DNS record was found.
     """
+    loop = asyncio.get_running_loop()
     try:
-        socket.getaddrinfo(domain, None)
+        await loop.getaddrinfo(domain, None)
         return False
     except socket.gaierror:
         return True
@@ -565,6 +584,7 @@ def main():
         tld_cache_file=args.tld_cache_file,
         tld_cache_age=args.tld_cache_age,
         force_refresh=args.force_refresh,
+        dns_batch_size=args.dns_batch_size,
     )
     asyncio.run(finder.run())
 

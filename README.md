@@ -44,6 +44,7 @@ Available options:
 - `--tld-cache-file` – path to the cached TLD list
 - `--tld-cache-age` – maximum age of the cache in seconds
 - `--force-refresh` – ignore cache and fetch TLDs again
+- `--dns-batch-size` – number of concurrent DNS lookups per batch
 
 The process may take a while as it scores thousands of potential domains and
 queries DNS. Progress information is printed to the console and recorded in
