@@ -2,3 +2,4 @@ requests
 pytrends
 wordfreq
 tqdm
+aiohttp

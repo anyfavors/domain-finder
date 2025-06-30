@@ -9,8 +9,9 @@ import signal
 import sys
 import logging
 import argparse
+import asyncio
+import aiohttp
 from wordfreq import zipf_frequency
-from pytrends.request import TrendReq
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
@@ -61,8 +62,6 @@ class DomainFinder:
 
         self.processed: set[tuple[str, str]] = set()
         self.found: list[dict] = []
-
-        self.pytrends = TrendReq(hl='en-US', tz=360)
         self.session = requests.Session()
         retries = Retry(
             total=5,
@@ -169,7 +168,7 @@ class DomainFinder:
         self.write_html(self.found)
         sys.exit(0)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Execute the main domain finder workflow."""
         logging.basicConfig(
             level=logging.INFO,
@@ -187,11 +186,12 @@ class DomainFinder:
         labels = generate_labels(self.num_candidates, self.max_label_len)
 
         logging.info(f"Starter beregning af metrics for {len(labels)} labels")
+        volumes = await gather_search_volumes(labels)
         label_stats = {}
         for lbl in tqdm(labels, desc='Label metrics', unit='label'):
             label_stats[lbl] = {
                 'ngram': ngram_score(lbl),
-                'volume': search_volume(lbl, self.pytrends),
+                'volume': volumes.get(lbl, 0),
                 'auto': autocomplete_count(lbl, self.session),
                 'length_s': (self.max_label_len - len(lbl) + 1) / self.max_label_len,
             }
@@ -350,27 +350,73 @@ def ngram_score(label):
     return zipf_frequency(label, 'en')
 
 
-def search_volume(label, pytrends_obj=None, retries: int = 3):
-    """Fetch Google Trends search volume for a label.
+async def search_volume(label, session: aiohttp.ClientSession | None = None, retries: int = 3) -> int:
+    """Fetch Google Trends search volume for a label asynchronously.
 
     Args:
-        label (str): Label to query.
-        retries (int): Number of attempts before giving up.
+        label: Label to query.
+        session: Optional ``aiohttp`` session to reuse.
+        retries: Number of attempts before giving up.
 
     Returns:
-        int: Maximum search volume over the last week.
+        Maximum search volume over the last week.
     """
-    for attempt in range(retries):
-        try:
-            pt = pytrends_obj or TrendReq(hl='en-US', tz=360)
-            pt.build_payload([label], timeframe='now 7-d')
-            df = pt.interest_over_time()
-            return int(df[label].max()) if not df.empty else 0
-        except Exception as e:
-            logging.error(f"Google Trends fejl for '{label}' (forsøg {attempt + 1}): {e}")
-            if attempt < retries - 1:
-                time.sleep(1)
+
+    explore_url = "https://trends.google.com/trends/api/explore"
+    widget_url = "https://trends.google.com/trends/api/widgetdata/multiline"
+    explore_req = {
+        "comparisonItem": [{"keyword": label, "geo": "", "time": "now 7-d"}],
+        "category": 0,
+        "property": "",
+    }
+
+    close = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close = True
+
+    try:
+        for attempt in range(retries):
+            try:
+                params = {"hl": "en-US", "tz": 360, "req": json.dumps(explore_req)}
+                async with session.get(explore_url, params=params, timeout=10) as resp:
+                    resp.raise_for_status()
+                    text = await resp.text()
+                    data = json.loads(text[5:])  # remove )]}', prefix
+                    widget = data["widgets"][0]
+
+                params = {
+                    "hl": "en-US",
+                    "tz": 360,
+                    "req": json.dumps(widget["request"]),
+                    "token": widget["token"],
+                }
+                async with session.get(widget_url, params=params, timeout=10) as resp2:
+                    resp2.raise_for_status()
+                    text2 = await resp2.text()
+                    data2 = json.loads(text2[5:])
+                    timeline = data2.get("default", {}).get("timelineData", [])
+                    values = [v["value"][0] for v in timeline if v.get("value")]
+                    return max(values) if values else 0
+            except Exception as e:
+                logging.error(
+                    f"Google Trends fejl for '{label}' (forsøg {attempt + 1}): {e}"
+                )
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+    finally:
+        if close:
+            await session.close()
+
     return 0
+
+
+async def gather_search_volumes(labels: list[str]) -> dict[str, int]:
+    """Fetch search volume for all labels concurrently."""
+    async with aiohttp.ClientSession() as session:
+        tasks = {lbl: asyncio.create_task(search_volume(lbl, session)) for lbl in labels}
+        results = await asyncio.gather(*tasks.values())
+    return dict(zip(tasks.keys(), results))
 
 
 def autocomplete_count(label, session_obj=None, retries: int = 3):
@@ -488,7 +534,7 @@ def main():
         tld_cache_age=args.tld_cache_age,
         force_refresh=args.force_refresh,
     )
-    finder.run()
+    asyncio.run(finder.run())
 
 if __name__ == '__main__':
     main()
