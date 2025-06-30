@@ -111,18 +111,29 @@ def save_record(rec):
         f.write(json.dumps(rec) + '\n')
 
 
-def fetch_tlds():
+def fetch_tlds(retries: int = 3):
     """Fetch a list of preferred TLDs from IANA.
 
+    Args:
+        retries (int): How many attempts to try before giving up.
+
     Returns:
-        list[str]: Filtered list of top TLDs.
+        list[str]: Filtered list of top TLDs or empty list on failure.
     """
-    resp = session.get('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', timeout=10)
-    tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
-    ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
-    top = sorted(ascii_tlds, key=len)[:TOP_TLD_COUNT]
-    logging.info(f"Valgt {len(top)} vestlige, ASCII-only TLD'er")
-    return top
+    for attempt in range(retries):
+        try:
+            resp = session.get('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', timeout=10)
+            resp.raise_for_status()
+            tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
+            ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
+            top = sorted(ascii_tlds, key=len)[:TOP_TLD_COUNT]
+            logging.info(f"Valgt {len(top)} vestlige, ASCII-only TLD'er")
+            return top
+        except requests.RequestException as e:
+            logging.error(f"Forsøg {attempt + 1} på at hente TLDs fejlede: {e}")
+            if attempt < retries - 1:
+                time.sleep(1)
+    return []
 
 
 def is_pronounceable(s):
@@ -169,38 +180,49 @@ def ngram_score(label):
     return zipf_frequency(label, 'en')
 
 
-def search_volume(label):
+def search_volume(label, retries: int = 3):
     """Fetch Google Trends search volume for a label.
 
     Args:
         label (str): Label to query.
+        retries (int): Number of attempts before giving up.
 
     Returns:
         int: Maximum search volume over the last week.
     """
-    try:
-        pytrends.build_payload([label], timeframe='now 7-d')
-        df = pytrends.interest_over_time()
-        return int(df[label].max()) if not df.empty else 0
-    except:
-        return 0
+    for attempt in range(retries):
+        try:
+            pytrends.build_payload([label], timeframe='now 7-d')
+            df = pytrends.interest_over_time()
+            return int(df[label].max()) if not df.empty else 0
+        except Exception as e:
+            logging.error(f"Google Trends fejl for '{label}' (forsøg {attempt + 1}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1)
+    return 0
 
 
-def autocomplete_count(label):
+def autocomplete_count(label, retries: int = 3):
     """Get the number of Google autocomplete suggestions for a label.
 
     Args:
         label (str): Label to query.
+        retries (int): How many attempts to try.
 
     Returns:
         int: Suggestion count or 0 on failure.
     """
-    try:
-        r = session.get('https://suggestqueries.google.com/complete/search',
-                        params={'client': 'firefox', 'q': label}, timeout=3)
-        return len(r.json()[1])
-    except:
-        return 0
+    for attempt in range(retries):
+        try:
+            r = session.get('https://suggestqueries.google.com/complete/search',
+                            params={'client': 'firefox', 'q': label}, timeout=3)
+            r.raise_for_status()
+            return len(r.json()[1])
+        except Exception as e:
+            logging.error(f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1)
+    return 0
 
 
 def generate_labels(n):
