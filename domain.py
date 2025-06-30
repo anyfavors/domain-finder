@@ -29,6 +29,11 @@ throttle = 0.05  # pause mellem DNS-tjek
 
 
 def parse_args():
+    """Parse command-line arguments.
+
+    Returns:
+        argparse.Namespace: Object with parsed arguments.
+    """
     parser = argparse.ArgumentParser(description="Generate and score domain names")
     parser.add_argument('--num-candidates', type=int, default=NUM_CANDIDATES,
                         help='number of random labels to generate')
@@ -54,6 +59,12 @@ found = []
 
 # Ctrl-C håndtering
 def graceful_exit(signum, frame):
+    """Handle SIGINT by saving HTML output and exiting.
+
+    Args:
+        signum (int): Signal number.
+        frame (FrameType): Current stack frame.
+    """
     logging.info('Afslutter og gemmer HTML...')
     write_html(found)
     sys.exit(0)
@@ -74,6 +85,11 @@ PRICE_OVERRIDES = {'com': 12, 'net': 10, 'io': 35, 'co': 30,
 # --- Hjælpefunktioner --- #
 
 def load_progress():
+    """Load processed domains from disk into memory.
+
+    Returns:
+        None
+    """
     try:
         with open(JSONL_FILE, 'r') as f:
             for line in f:
@@ -86,11 +102,21 @@ def load_progress():
 
 
 def save_record(rec):
+    """Append a domain record to the JSONL log file.
+
+    Args:
+        rec (dict): Record to persist.
+    """
     with open(JSONL_FILE, 'a') as f:
         f.write(json.dumps(rec) + '\n')
 
 
 def fetch_tlds():
+    """Fetch a list of preferred TLDs from IANA.
+
+    Returns:
+        list[str]: Filtered list of top TLDs.
+    """
     resp = session.get('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', timeout=10)
     tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
     ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
@@ -100,6 +126,14 @@ def fetch_tlds():
 
 
 def is_pronounceable(s):
+    """Check if a label is likely pronounceable.
+
+    Args:
+        s (str): Candidate label.
+
+    Returns:
+        bool: True if pronounceable.
+    """
     v = set('aeiouy')
     if not any(c in v for c in s):
         return False
@@ -112,14 +146,38 @@ def is_pronounceable(s):
 
 
 def estimate_price(tld):
+    """Estimate registration price for a TLD.
+
+    Args:
+        tld (str): Top level domain.
+
+    Returns:
+        int: Approximate price in USD.
+    """
     return PRICE_OVERRIDES.get(tld, {2: 20, 3: 15, 4: 12}.get(len(tld), 8))
 
 
 def ngram_score(label):
+    """Calculate Zipf frequency score for a label.
+
+    Args:
+        label (str): Label to evaluate.
+
+    Returns:
+        float: Zipf frequency score.
+    """
     return zipf_frequency(label, 'en')
 
 
 def search_volume(label):
+    """Fetch Google Trends search volume for a label.
+
+    Args:
+        label (str): Label to query.
+
+    Returns:
+        int: Maximum search volume over the last week.
+    """
     try:
         pytrends.build_payload([label], timeframe='now 7-d')
         df = pytrends.interest_over_time()
@@ -129,6 +187,14 @@ def search_volume(label):
 
 
 def autocomplete_count(label):
+    """Get the number of Google autocomplete suggestions for a label.
+
+    Args:
+        label (str): Label to query.
+
+    Returns:
+        int: Suggestion count or 0 on failure.
+    """
     try:
         r = session.get('https://suggestqueries.google.com/complete/search',
                         params={'client': 'firefox', 'q': label}, timeout=3)
@@ -138,6 +204,14 @@ def autocomplete_count(label):
 
 
 def generate_labels(n):
+    """Generate a set of random pronounceable labels.
+
+    Args:
+        n (int): Number of labels to produce.
+
+    Returns:
+        list[str]: Generated labels.
+    """
     letters = 'abcdefghijklmnopqrstuvwxyz'
     labels = set()
     logging.info(f"Starter generering af {n} labels")
@@ -153,11 +227,27 @@ def generate_labels(n):
 
 
 def normalize(vals):
+    """Normalize a list of numeric values to the range 0-1.
+
+    Args:
+        vals (list[float]): Values to normalize.
+
+    Returns:
+        list[float]: Normalized values.
+    """
     mn, mx = min(vals), max(vals)
     return [(v - mn) / (mx - mn) if mx > mn else 0 for v in vals]
 
 
 def dns_available(domain):
+    """Check whether a domain name resolves.
+
+    Args:
+        domain (str): Full domain to query.
+
+    Returns:
+        bool: True if no DNS record was found.
+    """
     try:
         socket.getaddrinfo(domain, None)
         return False
@@ -166,6 +256,11 @@ def dns_available(domain):
 
 
 def save_sorted_list(sorted_list):
+    """Write the sorted candidate list to disk.
+
+    Args:
+        sorted_list (list[dict]): Domains with scores.
+    """
     with open(SORTED_LIST_FILE, 'w') as f:
         for r in sorted_list:
             f.write(json.dumps(r) + '\n')
@@ -173,6 +268,11 @@ def save_sorted_list(sorted_list):
 
 
 def write_html(results):
+    """Generate and write HTML output for available domains.
+
+    Args:
+        results (list[dict]): Records of available domains.
+    """
     rows = ''.join(
         f"<tr><td>{r['name']}</td><td>{r['tld']}</td><td>{r['score']}</td><td>{r['price']}</td>"
         f"<td>{r['ngram']:.2f}</td><td>{r['volume']}</td><td>{r['auto']}</td></tr>\n"
@@ -197,12 +297,32 @@ def write_html(results):
 
 # --- Score funktion for multiprocessing --- #
 def compute_score(args):
+    """Compute the weighted score for a domain candidate.
+
+    Args:
+        args (tuple): Record and normalized metric arrays.
+
+    Returns:
+        tuple: Index of the record and calculated score.
+    """
     r, pn, nn, vn, an = args
-    score = round(0.3 * r['length_s'] + 0.2 * pn[r['idx']] + 0.2 * nn[r['idx']] + 0.15 * vn[r['idx']] + 0.15 * an[r['idx']], 4)
+    score = round(
+        0.3 * r['length_s']
+        + 0.2 * pn[r['idx']]
+        + 0.2 * nn[r['idx']]
+        + 0.15 * vn[r['idx']]
+        + 0.15 * an[r['idx']],
+        4,
+    )
     return (r['idx'], score)
 
 # --- Hovedprogram --- #
 def main():
+    """Entry point for running the domain finder.
+
+    Returns:
+        None
+    """
     args = parse_args()
 
     global NUM_CANDIDATES, MAX_LABEL_LEN, TOP_TLD_COUNT
