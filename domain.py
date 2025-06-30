@@ -24,6 +24,9 @@ HTML_OUT = 'domains.html'
 JSONL_FILE = 'results.jsonl'
 LOG_FILE = 'domain_scanner.log'
 SORTED_LIST_FILE = 'sorted_domains.jsonl'
+TLD_CACHE_FILE = 'tlds.json'
+TLD_CACHE_MAX_AGE = 86400  # one day in seconds
+
 throttle = 0.05  # pause mellem DNS-tjek
 
 
@@ -39,6 +42,9 @@ class DomainFinder:
         jsonl_file: str = JSONL_FILE,
         sorted_list_file: str = SORTED_LIST_FILE,
         log_file: str = LOG_FILE,
+        tld_cache_file: str = TLD_CACHE_FILE,
+        tld_cache_age: int = TLD_CACHE_MAX_AGE,
+        force_refresh: bool = False,
         pause: float = throttle,
     ) -> None:
         self.num_candidates = num_candidates
@@ -49,6 +55,9 @@ class DomainFinder:
         self.sorted_list_file = sorted_list_file
         self.log_file = log_file
         self.throttle = pause
+        self.tld_cache_file = tld_cache_file
+        self.tld_cache_age = tld_cache_age
+        self.force_refresh = force_refresh
 
         self.processed: set[tuple[str, str]] = set()
         self.found: list[dict] = []
@@ -64,7 +73,20 @@ class DomainFinder:
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
 
     def fetch_tlds(self, retries: int = 3) -> list[str]:
-        """Fetch a list of preferred TLDs from IANA."""
+        """Fetch a list of preferred TLDs from IANA with local caching."""
+        if not self.force_refresh:
+            try:
+                with open(self.tld_cache_file, 'r') as f:
+                    data = json.load(f)
+                if time.time() - data.get('timestamp', 0) < self.tld_cache_age:
+                    ascii_tlds = data.get('tlds', [])
+                    logging.info(f"Indlæser {len(ascii_tlds)} TLD'er fra cache")
+                    return sorted(ascii_tlds, key=len)[: self.top_tld_count]
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logging.error(f"Kunne ikke læse cache: {e}")
+
         for attempt in range(retries):
             try:
                 resp = self.session.get(
@@ -74,6 +96,11 @@ class DomainFinder:
                 resp.raise_for_status()
                 tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
                 ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
+                try:
+                    with open(self.tld_cache_file, 'w') as f:
+                        json.dump({'timestamp': time.time(), 'tlds': ascii_tlds}, f)
+                except Exception as e:
+                    logging.error(f"Kunne ikke gemme cache: {e}")
                 top = sorted(ascii_tlds, key=len)[: self.top_tld_count]
                 logging.info(f"Valgt {len(top)} vestlige, ASCII-only TLD'er")
                 return top
@@ -255,6 +282,12 @@ def parse_args():
                         help='path to sorted list file')
     parser.add_argument('--log-file', default=LOG_FILE,
                         help='path to log file')
+    parser.add_argument('--tld-cache-file', default=TLD_CACHE_FILE,
+                        help='path to cached TLD JSON file')
+    parser.add_argument('--tld-cache-age', type=int, default=TLD_CACHE_MAX_AGE,
+                        help='maximum cache age in seconds')
+    parser.add_argument('--force-refresh', action='store_true',
+                        help='force refresh of TLD list')
     return parser.parse_args()
 
 
@@ -451,6 +484,9 @@ def main():
         jsonl_file=args.jsonl_file,
         sorted_list_file=args.sorted_file,
         log_file=args.log_file,
+        tld_cache_file=args.tld_cache_file,
+        tld_cache_age=args.tld_cache_age,
+        force_refresh=args.force_refresh,
     )
     finder.run()
 

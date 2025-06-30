@@ -29,7 +29,7 @@ You can override several settings using command line options. Example:
 
 ```bash
 python domain.py --num-candidates 500 --max-label-len 3 \
-  --top-tld-count 100 --html-out mydomains.html
+  --top-tld-count 100 --html-out mydomains.html --force-refresh
 ```
 
 Available options:
@@ -41,6 +41,9 @@ Available options:
 - `--jsonl-file` – path to the JSONL results file
 - `--sorted-file` – path to the JSONL file with all combinations
 - `--log-file` – path to the log file
+- `--tld-cache-file` – path to the cached TLD list
+- `--tld-cache-age` – maximum age of the cache in seconds
+- `--force-refresh` – ignore cache and fetch TLDs again
 
 The process may take a while as it scores thousands of potential domains and
 queries DNS. Progress information is printed to the console and recorded in
