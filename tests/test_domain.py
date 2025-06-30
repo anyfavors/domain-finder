@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import json
 import time
+import asyncio
 from unittest.mock import Mock
 
 import domain
@@ -66,4 +67,40 @@ def test_fetch_tlds_cache_expired(tmp_path):
     tlds = df.fetch_tlds()
     assert df.session.get.called
     assert tlds == ["com"]
+
+
+def test_search_volume_cache(monkeypatch):
+    async def fake_sv(label, session=None, retries=3):
+        return 42
+
+    monkeypatch.setattr(domain, "search_volume", fake_sv)
+    cache = {}
+    res = asyncio.run(domain.gather_search_volumes(["abc"], cache))
+    assert res == {"abc": 42}
+    assert cache["abc"]["volume"] == 42
+
+    async def fail_sv(label, session=None, retries=3):
+        raise AssertionError("called")
+
+    monkeypatch.setattr(domain, "search_volume", fail_sv)
+    res2 = asyncio.run(domain.gather_search_volumes(["abc"], cache))
+    assert res2 == {"abc": 42}
+
+
+def test_autocomplete_cache(monkeypatch):
+    async def fake_ac(label, session=None, retries=3):
+        return 7
+
+    monkeypatch.setattr(domain, "autocomplete_count", fake_ac)
+    cache = {}
+    res = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
+    assert res == {"abc": 7}
+    assert cache["abc"]["auto"] == 7
+
+    async def fail_ac(label, session=None, retries=3):
+        raise AssertionError("called")
+
+    monkeypatch.setattr(domain, "autocomplete_count", fail_ac)
+    res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
+    assert res2 == {"abc": 7}
 
