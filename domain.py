@@ -187,12 +187,13 @@ class DomainFinder:
 
         logging.info(f"Starter beregning af metrics for {len(labels)} labels")
         volumes = await gather_search_volumes(labels)
+        autos = await gather_autocomplete_counts(labels)
         label_stats = {}
         for lbl in tqdm(labels, desc='Label metrics', unit='label'):
             label_stats[lbl] = {
                 'ngram': ngram_score(lbl),
                 'volume': volumes.get(lbl, 0),
-                'auto': autocomplete_count(lbl, self.session),
+                'auto': autos.get(lbl, 0),
                 'length_s': (self.max_label_len - len(lbl) + 1) / self.max_label_len,
             }
         logging.info("Færdig med label metrics")
@@ -419,28 +420,59 @@ async def gather_search_volumes(labels: list[str]) -> dict[str, int]:
     return dict(zip(tasks.keys(), results))
 
 
-def autocomplete_count(label, session_obj=None, retries: int = 3):
+async def autocomplete_count(
+    label: str, session: aiohttp.ClientSession | None = None, retries: int = 3
+) -> int:
     """Get the number of Google autocomplete suggestions for a label.
 
     Args:
-        label (str): Label to query.
-        retries (int): How many attempts to try.
+        label: Label to query.
+        session: Optional ``aiohttp`` session to reuse.
+        retries: How many attempts to try.
 
     Returns:
-        int: Suggestion count or 0 on failure.
+        Suggestion count or 0 on failure.
     """
-    for attempt in range(retries):
-        try:
-            sess = session_obj or requests.Session()
-            r = sess.get('https://suggestqueries.google.com/complete/search',
-                            params={'client': 'firefox', 'q': label}, timeout=3)
-            r.raise_for_status()
-            return len(r.json()[1])
-        except Exception as e:
-            logging.error(f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}")
-            if attempt < retries - 1:
-                time.sleep(1)
+
+    close = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close = True
+
+    try:
+        for attempt in range(retries):
+            try:
+                params = {"client": "firefox", "q": label}
+                async with session.get(
+                    "https://suggestqueries.google.com/complete/search",
+                    params=params,
+                    timeout=5,
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                    return len(data[1])
+            except Exception as e:
+                logging.error(
+                    f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}"
+                )
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+    finally:
+        if close:
+            await session.close()
+
     return 0
+
+
+async def gather_autocomplete_counts(labels: list[str]) -> dict[str, int]:
+    """Fetch autocomplete counts for all labels concurrently."""
+    async with aiohttp.ClientSession() as session:
+        tasks = {
+            lbl: asyncio.create_task(autocomplete_count(lbl, session))
+            for lbl in labels
+        }
+        results = await asyncio.gather(*tasks.values())
+    return dict(zip(tasks.keys(), results))
 
 
 def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
