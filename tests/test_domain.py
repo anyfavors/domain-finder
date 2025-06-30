@@ -1,4 +1,3 @@
-import random
 import os
 import sys
 
@@ -22,10 +21,13 @@ def test_estimate_price():
 
 
 def test_generate_labels():
-    random.seed(0)
     labels = domain.generate_labels(5)
-    assert len(labels) == 5
+    assert labels == ["a", "e", "i", "o", "u"]
     assert len(set(labels)) == len(labels)
     for lbl in labels:
         assert domain.is_pronounceable(lbl)
         assert 1 <= len(lbl) <= domain.MAX_LABEL_LEN
+
+
+def test_generate_labels_deterministic():
+    assert domain.generate_labels(6) == domain.generate_labels(6)

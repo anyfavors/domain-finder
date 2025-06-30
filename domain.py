@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import socket
 import random
+import itertools
 import requests
 import time
 import json
@@ -364,26 +365,27 @@ def autocomplete_count(label, session_obj=None, retries: int = 3):
 
 
 def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
-    """Generate a set of random pronounceable labels.
+    """Generate a deterministic list of pronounceable labels.
 
     Args:
         n (int): Number of labels to produce.
 
     Returns:
-        list[str]: Generated labels.
+        list[str]: Generated labels in deterministic order.
     """
     letters = 'abcdefghijklmnopqrstuvwxyz'
-    labels = set()
+    labels = []
     logging.info(f"Starter generering af {n} labels")
-    for _ in tqdm(range(n), desc='Labels genereret', unit='label'):
-        while True:
-            length = random.randint(1, max_label_len)
-            cand = ''.join(random.choice(letters) for _ in range(length))
-            if is_pronounceable(cand) and cand not in labels:
-                labels.add(cand)
-                break
+    for length in range(1, max_label_len + 1):
+        for combo in itertools.product(letters, repeat=length):
+            cand = ''.join(combo)
+            if is_pronounceable(cand):
+                labels.append(cand)
+                if len(labels) >= n:
+                    logging.info(f"Genereret {len(labels)} udtalelige labels")
+                    return labels
     logging.info(f"Genereret {len(labels)} udtalelige labels")
-    return list(labels)
+    return labels
 
 
 def normalize(vals):
