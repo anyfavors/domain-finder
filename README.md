@@ -57,3 +57,12 @@ queries DNS. Progress information is printed to the console and recorded in
 
 Running the script multiple times will append new findings to
 `results.jsonl` and update `domains.html`.
+
+## Running tests
+
+Install pytest and run the suite from the repository root:
+
+```bash
+pip install pytest
+pytest
+```
