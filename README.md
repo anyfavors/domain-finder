@@ -75,7 +75,7 @@ provided to run these tools automatically.
 Install the additional development dependencies and activate the hook:
 
 ```bash
-pip install black flake8 pre-commit
+pip install -r requirements-dev.txt
 pre-commit install
 ```
 
