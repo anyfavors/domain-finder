@@ -17,19 +17,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-tld-count", type=int, default=defaults.top_tld_count)
     parser.add_argument("--html-out", type=Path, default=defaults.html_out)
     parser.add_argument("--jsonl-file", type=Path, default=defaults.jsonl_file)
-    parser.add_argument("--sorted-file", dest="sorted_file", type=Path, default=defaults.sorted_list_file)
+    parser.add_argument(
+        "--sorted-file",
+        dest="sorted_file",
+        type=Path,
+        default=defaults.sorted_list_file,
+    )
     parser.add_argument("--log-file", type=Path, default=defaults.log_file)
     parser.add_argument("--tld-cache-file", type=Path, default=defaults.tld_cache_file)
     parser.add_argument("--tld-cache-age", type=int, default=defaults.tld_cache_age)
-    parser.add_argument("--tld-cache-refresh", action="store_true", default=defaults.tld_cache_refresh)
-    parser.add_argument("--metrics-cache-file", type=Path, default=defaults.metrics_cache_file)
+    parser.add_argument(
+        "--tld-cache-refresh", action="store_true", default=defaults.tld_cache_refresh
+    )
+    parser.add_argument(
+        "--metrics-cache-file", type=Path, default=defaults.metrics_cache_file
+    )
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument("--dns-batch-size", type=int, default=defaults.dns_batch_size)
     parser.add_argument("--dns-timeout", type=int, default=defaults.dns_timeout)
     parser.add_argument("--queue-size", type=int, default=defaults.queue_size)
     parser.add_argument("--flush-interval", type=float, default=defaults.flush_interval)
-    parser.add_argument("--trends-concurrency", type=int, default=defaults.trends_concurrency)
-    parser.add_argument("--autocomplete-concurrency", type=int, default=defaults.autocomplete_concurrency)
+    parser.add_argument(
+        "--trends-concurrency", type=int, default=defaults.trends_concurrency
+    )
+    parser.add_argument(
+        "--autocomplete-concurrency",
+        type=int,
+        default=defaults.autocomplete_concurrency,
+    )
     parser.add_argument("--weight-length", type=float, default=defaults.weight_length)
     parser.add_argument("--weight-price", type=float, default=defaults.weight_price)
     parser.add_argument("--weight-ngram", type=float, default=defaults.weight_ngram)
@@ -38,7 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lang", type=str, default=defaults.lang)
     args = parser.parse_args()
     if args.config:
-        import tomllib, json
+        import tomllib
+        import json
+
         data = {}
         try:
             text = args.config.read_text()

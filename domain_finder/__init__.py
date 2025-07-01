@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 import socket
-import itertools
 import time
 import json
 import signal
 import sys
 import logging
-import argparse
 import asyncio
 import aiohttp
 import aiodns
@@ -59,6 +57,7 @@ class Config:
     weight_ngram: float = 0.2
     weight_volume: float = 0.15
     weight_auto: float = 0.15
+
 
 # --- KONSTANTER --- #
 DEFAULT_CONFIG = Config()
@@ -222,25 +221,29 @@ class DomainFinder:
             self._writer_task = None
             self._writer_queue = None
 
-    async def fetch_tlds(self, session: aiohttp.ClientSession, retries: int = 3) -> list[str]:
+    async def fetch_tlds(
+        self, session: aiohttp.ClientSession, retries: int = 3
+    ) -> list[str]:
         """Fetch a list of preferred TLDs from IANA with local caching."""
-        url = 'https://data.iana.org/TLD/tlds-alpha-by-domain.txt'
+        url = "https://data.iana.org/TLD/tlds-alpha-by-domain.txt"
         if not self.force_refresh:
             try:
-                async with aiofiles.open(self.tld_cache_file, 'r') as f:
+                async with aiofiles.open(self.tld_cache_file, "r") as f:
                     data = json.loads(await f.read())
-                if time.time() - data.get('timestamp', 0) < self.tld_cache_age:
-                    ascii_tlds = data.get('tlds', [])
-                    headers = data.get('headers', {})
+                if time.time() - data.get("timestamp", 0) < self.tld_cache_age:
+                    ascii_tlds = data.get("tlds", [])
+                    headers = data.get("headers", {})
                     if self.tld_cache_refresh and headers:
                         h = {}
-                        if headers.get('ETag'):
-                            h['If-None-Match'] = headers['ETag']
-                        if headers.get('Last-Modified'):
-                            h['If-Modified-Since'] = headers['Last-Modified']
+                        if headers.get("ETag"):
+                            h["If-None-Match"] = headers["ETag"]
+                        if headers.get("Last-Modified"):
+                            h["If-Modified-Since"] = headers["Last-Modified"]
                         async with session.get(url, headers=h, timeout=10) as resp:
                             if resp.status == 304:
-                                logger.info(f"Indlæser {len(ascii_tlds)} TLD'er fra cache")
+                                logger.info(
+                                    f"Indlæser {len(ascii_tlds)} TLD'er fra cache"
+                                )
                                 return sorted(ascii_tlds, key=len)[: self.top_tld_count]
                     else:
                         logger.info(f"Indlæser {len(ascii_tlds)} TLD'er fra cache")
@@ -255,18 +258,27 @@ class DomainFinder:
                 async with session.get(url, timeout=10) as resp:
                     resp.raise_for_status()
                     text = await resp.text()
-                tlds = [l.lower() for l in text.splitlines() if l and not l.startswith('#')]
+                tlds = [
+                    line.lower()
+                    for line in text.splitlines()
+                    if line and not line.startswith("#")
+                ]
                 ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
                 try:
-                    async with aiofiles.open(self.tld_cache_file, 'w') as f:
-                        await f.write(json.dumps({
-                            'timestamp': time.time(),
-                            'tlds': ascii_tlds,
-                            'headers': {
-                                'ETag': resp.headers.get('ETag'),
-                                'Last-Modified': resp.headers.get('Last-Modified'),
-                            },
-                        }))
+                    async with aiofiles.open(self.tld_cache_file, "w") as f:
+                        headers = getattr(resp, "headers", {}) or {}
+                        await f.write(
+                            json.dumps(
+                                {
+                                    "timestamp": time.time(),
+                                    "tlds": ascii_tlds,
+                                    "headers": {
+                                        "ETag": headers.get("ETag"),
+                                        "Last-Modified": headers.get("Last-Modified"),
+                                    },
+                                }
+                            )
+                        )
                 except Exception as e:
                     logger.error(f"Kunne ikke gemme cache: {e}")
                 top = sorted(ascii_tlds, key=len)[: self.top_tld_count]
@@ -278,12 +290,11 @@ class DomainFinder:
                     await asyncio.sleep(1)
         return []
 
-
     # --- State helpers --- #
     async def load_progress(self) -> None:
         """Load processed domains from disk into memory asynchronously."""
         try:
-            async with aiofiles.open(self.jsonl_file, 'r') as f:
+            async with aiofiles.open(self.jsonl_file, "r") as f:
                 async for line in f:
                     rec_dict = json.loads(line)
                     cand = candidate_from_dict(rec_dict)
@@ -317,14 +328,13 @@ class DomainFinder:
         """Load metrics cache from disk if available."""
         try:
             import aiofiles
-            async with aiofiles.open(self.metrics_cache_file, 'r') as f:
+
+            async with aiofiles.open(self.metrics_cache_file, "r") as f:
                 content = await f.read()
                 self.metrics_cache = json.loads(content)
             if not isinstance(self.metrics_cache, dict):
                 self.metrics_cache = {}
-            logger.info(
-                f"Indlæste metrics cache med {len(self.metrics_cache)} labels"
-            )
+            logger.info(f"Indlæste metrics cache med {len(self.metrics_cache)} labels")
         except FileNotFoundError:
             self.metrics_cache = {}
         except Exception as e:
@@ -335,7 +345,8 @@ class DomainFinder:
         """Persist metrics cache to disk."""
         try:
             import aiofiles
-            async with aiofiles.open(self.metrics_cache_file, 'w') as f:
+
+            async with aiofiles.open(self.metrics_cache_file, "w") as f:
                 await f.write(json.dumps(self.metrics_cache))
         except Exception as e:
             logger.error(f"Kunne ikke gemme metrics cache: {e}")
@@ -352,7 +363,7 @@ class DomainFinder:
 
     def graceful_exit(self, signum, frame) -> None:
         """Handle SIGINT by saving HTML output and exiting."""
-        logger.info('Afslutter og gemmer HTML...')
+        logger.info("Afslutter og gemmer HTML...")
         self.stop_flush_thread()
         asyncio.run(self.save_metrics_cache())
         sys.exit(0)
@@ -361,7 +372,7 @@ class DomainFinder:
         """Execute the main domain finder workflow."""
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s %(levelname)s: %(message)s',
+            format="%(asctime)s %(levelname)s: %(message)s",
             handlers=[
                 logging.FileHandler(self.log_file),
                 logging.StreamHandler(sys.stdout),
@@ -377,7 +388,7 @@ class DomainFinder:
         if self.sorted_list_file.exists() and not self.force_refresh:
             logger.info(f"Genoptager fra {self.sorted_list_file}")
             with open(self.sorted_list_file) as f:
-                raw = [candidate_from_dict(json.loads(l)) for l in f]
+                raw = [candidate_from_dict(json.loads(line)) for line in f]
         else:
             async with aiohttp.ClientSession() as session:
                 tlds = await self.fetch_tlds(session)
@@ -403,9 +414,9 @@ class DomainFinder:
                 )
                 volumes, autos = await asyncio.gather(volumes_task, autos_task)
 
-            ngram_scores = np.array([
-                await asyncio.to_thread(ngram_score, lbl) for lbl in labels
-            ])
+            ngram_scores = np.array(
+                [await asyncio.to_thread(ngram_score, lbl) for lbl in labels]
+            )
             lengths = np.array([len(lbl) for lbl in labels])
             length_scores = (self.max_label_len - lengths + 1) / self.max_label_len
             volume_arr = np.array([volumes.get(lbl, 0) for lbl in labels])
@@ -415,10 +426,10 @@ class DomainFinder:
 
             label_stats = {
                 lbl: {
-                    'ngram': ngram,
-                    'volume': vol,
-                    'auto': auto,
-                    'length_s': ls,
+                    "ngram": ngram,
+                    "volume": vol,
+                    "auto": auto,
+                    "length_s": ls,
                 }
                 for lbl, ngram, vol, auto, ls in zip(
                     labels, ngram_scores, volume_arr, auto_arr, length_scores
@@ -430,9 +441,9 @@ class DomainFinder:
             logger.info(f"Scorer {total} kombinationer i batches")
 
             price_vals = list(tld_prices.values())
-            ngram_vals = [v['ngram'] for v in label_stats.values()]
-            volume_vals = [v['volume'] for v in label_stats.values()]
-            auto_vals = [v['auto'] for v in label_stats.values()]
+            ngram_vals = [v["ngram"] for v in label_stats.values()]
+            volume_vals = [v["volume"] for v in label_stats.values()]
+            auto_vals = [v["auto"] for v in label_stats.values()]
 
             min_price, max_price = min(price_vals), max(price_vals)
             min_ngram, max_ngram = min(ngram_vals), max(ngram_vals)
@@ -489,17 +500,17 @@ class DomainFinder:
                 li, ti = np.divmod(sorted_idx, len(tlds))
                 batch_candidates = [
                     Candidate(
-                        name=batch_labels[l],
+                        name=batch_labels[lbl_idx],
                         tld=tlds[t],
                         price=tld_prices[tlds[t]],
-                        ngram=float(batch_ngram[l]),
-                        volume=int(batch_volume[l]),
-                        auto=int(batch_auto[l]),
-                        length_s=float(batch_ln[l]),
+                        ngram=float(batch_ngram[lbl_idx]),
+                        volume=int(batch_volume[lbl_idx]),
+                        auto=int(batch_auto[lbl_idx]),
+                        length_s=float(batch_ln[lbl_idx]),
                         idx=int(start * len(tlds) + i),
                         score=round(float(flat_scores[i]), 4),
                     )
-                    for i, l, t in zip(sorted_idx, li, ti)
+                    for i, lbl_idx, t in zip(sorted_idx, li, ti)
                 ]
                 best.extend(batch_candidates)
                 best.sort(key=lambda c: c.score or 0, reverse=True)
@@ -508,7 +519,6 @@ class DomainFinder:
             raw = best
 
             await self.save_sorted_list(raw)
-
 
         logger.info("Starter DNS-scanning af sorteret liste...")
         await self.scan_domains(raw)
@@ -527,9 +537,7 @@ class DomainFinder:
         self.processed.add(key)
         if available:
             self.found.append(rec)
-            logger.info(
-                f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}"
-            )
+            logger.info(f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}")
         if self._writer_queue:
             await self._writer_queue.put(json.dumps(candidate_to_dict(rec)))
 
@@ -563,9 +571,6 @@ class DomainFinder:
                 await w
 
 
-
-
-
 # Checkpointing og fundne domæner holdes nu i klasseinstanser
 
 # Opsæt logging konfigureres i main()
@@ -573,12 +578,21 @@ class DomainFinder:
 # Pris-estimater (USD)
 
 # Pris-estimater (USD)
-PRICE_OVERRIDES = {'com': 12, 'net': 10, 'io': 35, 'co': 30,
-                   'ai': 60, 'app': 20, 'tech': 40, 'org': 10,
-                   'info': 8, 'biz': 7, 'dk': 8}
+PRICE_OVERRIDES = {
+    "com": 12,
+    "net": 10,
+    "io": 35,
+    "co": 30,
+    "ai": 60,
+    "app": 20,
+    "tech": 40,
+    "org": 10,
+    "info": 8,
+    "biz": 7,
+    "dk": 8,
+}
 
 # --- Hjælpefunktioner --- #
-
 
 
 def is_pronounceable(s):
@@ -616,10 +630,12 @@ def ngram_score(label):
     Returns:
         float: Zipf frequency score.
     """
-    return zipf_frequency(label, 'en')
+    return zipf_frequency(label, "en")
 
 
-async def search_volume(label: str, session: aiohttp.ClientSession, retries: int = 3) -> int:
+async def search_volume(
+    label: str, session: aiohttp.ClientSession, retries: int = 3
+) -> int:
     """Fetch Google Trends search volume for a label asynchronously.
 
     Args:
@@ -688,8 +704,8 @@ async def gather_search_volumes(
     to_fetch: list[str] = []
     if cache is not None:
         for lbl in labels:
-            if lbl in cache and 'volume' in cache[lbl]:
-                results[lbl] = cache[lbl]['volume']
+            if lbl in cache and "volume" in cache[lbl]:
+                results[lbl] = cache[lbl]["volume"]
             else:
                 to_fetch.append(lbl)
     else:
@@ -712,7 +728,7 @@ async def gather_search_volumes(
                 val = await search_volume(lbl, session)
                 results[lbl] = val
                 if cache is not None:
-                    cache.setdefault(lbl, {})['volume'] = val
+                    cache.setdefault(lbl, {})["volume"] = val
                 queue.task_done()
                 progress.update(1)
 
@@ -747,14 +763,12 @@ async def autocomplete_count(
                 "https://suggestqueries.google.com/complete/search",
                 params=params,
                 timeout=5,
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-                    return len(data[1])
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                return len(data[1])
         except Exception as e:
-            logger.error(
-                f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}"
-            )
+            logger.error(f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}")
             if attempt < retries - 1:
                 await asyncio.sleep(1)
     return 0
@@ -771,8 +785,8 @@ async def gather_autocomplete_counts(
     to_fetch: list[str] = []
     if cache is not None:
         for lbl in labels:
-            if lbl in cache and 'auto' in cache[lbl]:
-                results[lbl] = cache[lbl]['auto']
+            if lbl in cache and "auto" in cache[lbl]:
+                results[lbl] = cache[lbl]["auto"]
             else:
                 to_fetch.append(lbl)
     else:
@@ -795,7 +809,7 @@ async def gather_autocomplete_counts(
                 val = await autocomplete_count(lbl, session)
                 results[lbl] = val
                 if cache is not None:
-                    cache.setdefault(lbl, {})['auto'] = val
+                    cache.setdefault(lbl, {})["auto"] = val
                 queue.task_done()
                 progress.update(1)
 
@@ -885,8 +899,8 @@ async def dns_available(
         return True
 
 
-
 # --- Score funktion for multiprocessing --- #
+
 
 # --- Hovedprogram --- #
 def main() -> None:

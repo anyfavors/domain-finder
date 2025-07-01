@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import json
 import time
 import asyncio
-from unittest.mock import Mock
 
 import domain_finder as domain
 
@@ -47,12 +46,16 @@ def test_fetch_tlds_cached(tmp_path):
     class FakeResp:
         def __init__(self, text):
             self._text = text
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, exc_type, exc, tb):
             pass
+
         async def text(self):
             return self._text
+
         def raise_for_status(self):
             pass
 
@@ -75,25 +78,30 @@ def test_fetch_tlds_cached(tmp_path):
 
 def test_fetch_tlds_cache_expired(tmp_path):
     cache = tmp_path / "tlds.json"
-    cache.write_text(json.dumps({'timestamp': time.time() - 100, 'tlds': ["com"]}))
+    cache.write_text(json.dumps({"timestamp": time.time() - 100, "tlds": ["com"]}))
     cfg = domain.Config(tld_cache_file=str(cache), tld_cache_age=1)
     df = domain.DomainFinder(cfg)
 
     class FakeResp:
         def __init__(self, text):
             self._text = text
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, exc_type, exc, tb):
             pass
+
         async def text(self):
             return self._text
+
         def raise_for_status(self):
             pass
 
     class FakeSession:
         def __init__(self):
             self.called = False
+
         def get(self, *args, **kwargs):
             self.called = True
             return FakeResp("COM\n")
@@ -128,7 +136,9 @@ def test_autocomplete_cache(monkeypatch):
 
     monkeypatch.setattr(domain, "autocomplete_count", fake_ac)
     cache = {}
-    res = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache, session=object()))
+    res = asyncio.run(
+        domain.gather_autocomplete_counts(["abc"], cache, session=object())
+    )
     assert res == {"abc": 7}
     assert cache["abc"]["auto"] == 7
 
@@ -136,7 +146,9 @@ def test_autocomplete_cache(monkeypatch):
         raise AssertionError("called")
 
     monkeypatch.setattr(domain, "autocomplete_count", fail_ac)
-    res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache, session=object()))
+    res2 = asyncio.run(
+        domain.gather_autocomplete_counts(["abc"], cache, session=object())
+    )
     assert res2 == {"abc": 7}
 
 
@@ -177,4 +189,3 @@ def test_cli_invocation(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["domain-finder", "--num-candidates", "1"])
     domain.main()
     assert called
-
