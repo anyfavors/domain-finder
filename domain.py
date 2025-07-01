@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+import threading
 
 # --- KONSTANTER --- #
 NUM_CANDIDATES = 2500
@@ -36,6 +37,7 @@ throttle = 0.05  # pause mellem DNS-tjek
 DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
 QUEUE_SIZE = 10000  # behold kun de bedste N kombinationer
 SCORE_BATCH_SIZE = 1000  # antal records der scores ad gangen
+HTML_FLUSH_INTERVAL = 5  # seconds between HTML updates
 
 
 @dataclass
@@ -98,6 +100,7 @@ class DomainFinder:
         pause: float = throttle,
         dns_batch_size: int = DNS_BATCH_SIZE,
         queue_size: int = QUEUE_SIZE,
+        flush_interval: float = HTML_FLUSH_INTERVAL,
     ) -> None:
         self.num_candidates = num_candidates
         self.max_label_len = max_label_len
@@ -109,12 +112,16 @@ class DomainFinder:
         self.throttle = pause
         self.dns_batch_size = dns_batch_size
         self.queue_size = queue_size
+        self.flush_interval = flush_interval
         self.tld_cache_file = tld_cache_file
         self.tld_cache_age = tld_cache_age
         self.metrics_cache_file = metrics_cache_file
         self.force_refresh = force_refresh
 
         self.metrics_cache: dict[str, dict[str, int]] = {}
+
+        self._flush_event = threading.Event()
+        self._flush_thread: threading.Thread | None = None
 
         self.processed: set[tuple[str, str]] = set()
         self.found: list[Candidate] = []
@@ -126,6 +133,29 @@ class DomainFinder:
             respect_retry_after_header=True,
         )
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
+
+    def _flush_worker(self) -> None:
+        """Periodically write HTML output until the event is set."""
+        while not self._flush_event.wait(self.flush_interval):
+            self.write_html(self.found)
+
+    def start_flush_thread(self) -> None:
+        """Start background thread for periodic HTML flushing."""
+        if self._flush_thread is None:
+            self._flush_event.clear()
+            self._flush_thread = threading.Thread(
+                target=self._flush_worker,
+                daemon=True,
+            )
+            self._flush_thread.start()
+
+    def stop_flush_thread(self) -> None:
+        """Stop background flush thread and write final HTML."""
+        if self._flush_thread is not None:
+            self._flush_event.set()
+            self._flush_thread.join()
+            self._flush_thread = None
+        self.write_html(self.found)
 
     def fetch_tlds(self, retries: int = 3) -> list[str]:
         """Fetch a list of preferred TLDs from IANA with local caching."""
@@ -247,7 +277,7 @@ class DomainFinder:
     def graceful_exit(self, signum, frame) -> None:
         """Handle SIGINT by saving HTML output and exiting."""
         logging.info('Afslutter og gemmer HTML...')
-        self.write_html(self.found)
+        self.stop_flush_thread()
         self.save_metrics_cache()
         sys.exit(0)
 
@@ -265,6 +295,7 @@ class DomainFinder:
         signal.signal(signal.SIGINT, self.graceful_exit)
 
         self.load_progress()
+        self.start_flush_thread()
         self.load_metrics_cache()
         tlds = self.fetch_tlds()
         labels = generate_labels(self.num_candidates, self.max_label_len)
@@ -369,6 +400,7 @@ class DomainFinder:
         logging.info("Starter DNS-scanning af sorteret liste...")
         await self.scan_domains(raw)
         logging.info("Scanning færdig.")
+        self.stop_flush_thread()
         self.save_metrics_cache()
 
     async def _check_record(self, r: Candidate) -> None:
@@ -380,7 +412,6 @@ class DomainFinder:
             self.found.append(rec)
             self.processed.add(key)
             self.save_record(rec)
-            self.write_html(self.found)
             logging.info(f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}")
 
     async def scan_domains(self, raw: list[Candidate]) -> None:
@@ -431,6 +462,8 @@ def parse_args():
                         help='number of concurrent DNS lookups')
     parser.add_argument('--queue-size', type=int, default=QUEUE_SIZE,
                         help='keep only top N scored combinations')
+    parser.add_argument('--flush-interval', type=float, default=HTML_FLUSH_INTERVAL,
+                        help='seconds between HTML updates')
     return parser.parse_args()
 
 
@@ -759,6 +792,7 @@ def main():
         force_refresh=args.force_refresh,
         dns_batch_size=args.dns_batch_size,
         queue_size=args.queue_size,
+        flush_interval=args.flush_interval,
     )
     asyncio.run(finder.run())
 
