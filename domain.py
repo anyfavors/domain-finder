@@ -21,23 +21,47 @@ from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 import threading
 
-# --- KONSTANTER --- #
-NUM_CANDIDATES = 2500
-MAX_LABEL_LEN = 4
-TOP_TLD_COUNT = 200
-HTML_OUT = 'domains.html'
-JSONL_FILE = 'results.jsonl'
-LOG_FILE = 'domain_scanner.log'
-SORTED_LIST_FILE = 'sorted_domains.jsonl'
-TLD_CACHE_FILE = 'tlds.json'
-TLD_CACHE_MAX_AGE = 86400  # one day in seconds
-METRICS_CACHE_FILE = 'metrics.json'
 
-throttle = 0.05  # pause mellem DNS-tjek
-DNS_BATCH_SIZE = 50  # antal samtidige DNS-opslag
-QUEUE_SIZE = 10000  # behold kun de bedste N kombinationer
-SCORE_BATCH_SIZE = 1000  # antal records der scores ad gangen
-HTML_FLUSH_INTERVAL = 5  # seconds between HTML updates
+@dataclass
+class Config:
+    """Configuration options for the domain finder."""
+
+    num_candidates: int = 2500
+    max_label_len: int = 4
+    top_tld_count: int = 200
+    html_out: str = "domains.html"
+    jsonl_file: str = "results.jsonl"
+    sorted_list_file: str = "sorted_domains.jsonl"
+    log_file: str = "domain_scanner.log"
+    tld_cache_file: str = "tlds.json"
+    tld_cache_age: int = 86400
+    metrics_cache_file: str = "metrics.json"
+    force_refresh: bool = False
+    throttle: float = 0.05
+    dns_batch_size: int = 50
+    queue_size: int = 10000
+    score_batch_size: int = 1000
+    flush_interval: float = 5.0
+
+# --- KONSTANTER --- #
+DEFAULT_CONFIG = Config()
+
+NUM_CANDIDATES = DEFAULT_CONFIG.num_candidates
+MAX_LABEL_LEN = DEFAULT_CONFIG.max_label_len
+TOP_TLD_COUNT = DEFAULT_CONFIG.top_tld_count
+HTML_OUT = DEFAULT_CONFIG.html_out
+JSONL_FILE = DEFAULT_CONFIG.jsonl_file
+LOG_FILE = DEFAULT_CONFIG.log_file
+SORTED_LIST_FILE = DEFAULT_CONFIG.sorted_list_file
+TLD_CACHE_FILE = DEFAULT_CONFIG.tld_cache_file
+TLD_CACHE_MAX_AGE = DEFAULT_CONFIG.tld_cache_age
+METRICS_CACHE_FILE = DEFAULT_CONFIG.metrics_cache_file
+
+throttle = DEFAULT_CONFIG.throttle  # pause mellem DNS-tjek
+DNS_BATCH_SIZE = DEFAULT_CONFIG.dns_batch_size  # antal samtidige DNS-opslag
+QUEUE_SIZE = DEFAULT_CONFIG.queue_size  # behold kun de bedste N kombinationer
+SCORE_BATCH_SIZE = DEFAULT_CONFIG.score_batch_size  # antal records der scores ad gangen
+HTML_FLUSH_INTERVAL = DEFAULT_CONFIG.flush_interval  # seconds between HTML updates
 
 
 @dataclass
@@ -84,39 +108,28 @@ def candidate_from_dict(data: dict) -> "Candidate":
 class DomainFinder:
     """Encapsulate state for the domain finding workflow."""
 
-    def __init__(
-        self,
-        num_candidates: int = NUM_CANDIDATES,
-        max_label_len: int = MAX_LABEL_LEN,
-        top_tld_count: int = TOP_TLD_COUNT,
-        html_out: str = HTML_OUT,
-        jsonl_file: str = JSONL_FILE,
-        sorted_list_file: str = SORTED_LIST_FILE,
-        log_file: str = LOG_FILE,
-        tld_cache_file: str = TLD_CACHE_FILE,
-        tld_cache_age: int = TLD_CACHE_MAX_AGE,
-        metrics_cache_file: str = METRICS_CACHE_FILE,
-        force_refresh: bool = False,
-        pause: float = throttle,
-        dns_batch_size: int = DNS_BATCH_SIZE,
-        queue_size: int = QUEUE_SIZE,
-        flush_interval: float = HTML_FLUSH_INTERVAL,
-    ) -> None:
-        self.num_candidates = num_candidates
-        self.max_label_len = max_label_len
-        self.top_tld_count = top_tld_count
-        self.html_out = html_out
-        self.jsonl_file = jsonl_file
-        self.sorted_list_file = sorted_list_file
-        self.log_file = log_file
-        self.throttle = pause
-        self.dns_batch_size = dns_batch_size
-        self.queue_size = queue_size
-        self.flush_interval = flush_interval
-        self.tld_cache_file = tld_cache_file
-        self.tld_cache_age = tld_cache_age
-        self.metrics_cache_file = metrics_cache_file
-        self.force_refresh = force_refresh
+    def __init__(self, config: Config | None = None) -> None:
+        if config is None:
+            config = Config()
+
+        self.num_candidates = config.num_candidates
+        self.max_label_len = config.max_label_len
+        self.top_tld_count = config.top_tld_count
+        self.html_out = config.html_out
+        self.jsonl_file = config.jsonl_file
+        self.sorted_list_file = config.sorted_list_file
+        self.log_file = config.log_file
+        self.throttle = config.throttle
+        self.dns_batch_size = config.dns_batch_size
+        self.queue_size = config.queue_size
+        self.flush_interval = config.flush_interval
+        self.tld_cache_file = config.tld_cache_file
+        self.tld_cache_age = config.tld_cache_age
+        self.metrics_cache_file = config.metrics_cache_file
+        self.force_refresh = config.force_refresh
+        self.score_batch_size = config.score_batch_size
+
+        self.config = config
 
         self.metrics_cache: dict[str, dict[str, int]] = {}
 
@@ -378,7 +391,7 @@ class DomainFinder:
                         )
                     )
 
-                    if len(batch_args) >= SCORE_BATCH_SIZE:
+                    if len(batch_args) >= self.score_batch_size:
                         for c, score in zip(batch_cands, pool.map(compute_score, batch_args)):
                             c.score = score
                             if len(heap) < self.queue_size:
@@ -438,33 +451,34 @@ def parse_args():
         argparse.Namespace: Object with parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Generate and score domain names")
-    parser.add_argument('--num-candidates', type=int, default=NUM_CANDIDATES,
+    defaults = Config()
+    parser.add_argument('--num-candidates', type=int, default=defaults.num_candidates,
                         help='number of random labels to generate')
-    parser.add_argument('--max-label-len', type=int, default=MAX_LABEL_LEN,
+    parser.add_argument('--max-label-len', type=int, default=defaults.max_label_len,
                         help='maximum length of a label')
-    parser.add_argument('--top-tld-count', type=int, default=TOP_TLD_COUNT,
+    parser.add_argument('--top-tld-count', type=int, default=defaults.top_tld_count,
                         help='number of TLDs to include')
-    parser.add_argument('--html-out', default=HTML_OUT,
+    parser.add_argument('--html-out', default=defaults.html_out,
                         help='path to HTML results file')
-    parser.add_argument('--jsonl-file', default=JSONL_FILE,
+    parser.add_argument('--jsonl-file', default=defaults.jsonl_file,
                         help='path to JSONL results file')
-    parser.add_argument('--sorted-file', default=SORTED_LIST_FILE,
+    parser.add_argument('--sorted-file', dest='sorted_file', default=defaults.sorted_list_file,
                         help='path to sorted list file')
-    parser.add_argument('--log-file', default=LOG_FILE,
+    parser.add_argument('--log-file', default=defaults.log_file,
                         help='path to log file')
-    parser.add_argument('--tld-cache-file', default=TLD_CACHE_FILE,
+    parser.add_argument('--tld-cache-file', default=defaults.tld_cache_file,
                         help='path to cached TLD JSON file')
-    parser.add_argument('--tld-cache-age', type=int, default=TLD_CACHE_MAX_AGE,
+    parser.add_argument('--tld-cache-age', type=int, default=defaults.tld_cache_age,
                         help='maximum cache age in seconds')
-    parser.add_argument('--metrics-cache-file', default=METRICS_CACHE_FILE,
+    parser.add_argument('--metrics-cache-file', default=defaults.metrics_cache_file,
                         help='path to cached metrics JSON file')
     parser.add_argument('--force-refresh', action='store_true',
                         help='force refresh of TLD list')
-    parser.add_argument('--dns-batch-size', type=int, default=DNS_BATCH_SIZE,
+    parser.add_argument('--dns-batch-size', type=int, default=defaults.dns_batch_size,
                         help='number of concurrent DNS lookups')
-    parser.add_argument('--queue-size', type=int, default=QUEUE_SIZE,
+    parser.add_argument('--queue-size', type=int, default=defaults.queue_size,
                         help='keep only top N scored combinations')
-    parser.add_argument('--flush-interval', type=float, default=HTML_FLUSH_INTERVAL,
+    parser.add_argument('--flush-interval', type=float, default=defaults.flush_interval,
                         help='seconds between HTML updates')
     return parser.parse_args()
 
@@ -691,7 +705,7 @@ async def gather_autocomplete_counts(
     return results
 
 
-def generate_labels(n, max_label_len: int = MAX_LABEL_LEN):
+def generate_labels(n, max_label_len: int = Config().max_label_len):
     """Generate a deterministic array of pronounceable labels.
 
     Args:
@@ -780,7 +794,7 @@ def compute_score(args):
 def main():
     """Entry point for running the domain finder."""
     args = parse_args()
-    finder = DomainFinder(
+    cfg = Config(
         num_candidates=args.num_candidates,
         max_label_len=args.max_label_len,
         top_tld_count=args.top_tld_count,
@@ -796,6 +810,7 @@ def main():
         queue_size=args.queue_size,
         flush_interval=args.flush_interval,
     )
+    finder = DomainFinder(cfg)
     asyncio.run(finder.run())
 
 if __name__ == '__main__':

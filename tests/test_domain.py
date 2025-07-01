@@ -40,7 +40,8 @@ def test_generate_labels_deterministic():
 
 def test_fetch_tlds_cached(tmp_path):
     cache = tmp_path / "tlds.json"
-    df = domain.DomainFinder(top_tld_count=2, tld_cache_file=str(cache))
+    cfg = domain.Config(top_tld_count=2, tld_cache_file=str(cache))
+    df = domain.DomainFinder(cfg)
     fake_resp = Mock()
     fake_resp.text = "COM\nNET\n"
     fake_resp.raise_for_status = Mock()
@@ -58,7 +59,8 @@ def test_fetch_tlds_cached(tmp_path):
 def test_fetch_tlds_cache_expired(tmp_path):
     cache = tmp_path / "tlds.json"
     cache.write_text(json.dumps({'timestamp': time.time() - 100, 'tlds': ["com"]}))
-    df = domain.DomainFinder(tld_cache_file=str(cache), tld_cache_age=1)
+    cfg = domain.Config(tld_cache_file=str(cache), tld_cache_age=1)
+    df = domain.DomainFinder(cfg)
     fake_resp = Mock()
     fake_resp.text = "COM\n"
     fake_resp.raise_for_status = Mock()
