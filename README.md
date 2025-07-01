@@ -5,14 +5,14 @@
 
 Domain Finder is a Python utility that generates pronounceable short labels,
 combines them with popular top-level domains (TLDs), calculates a score based on
-search trends and other heuristics, and checks if the resulting domains are
+several heuristics, and checks if the resulting domains are
 available. Results are written both as an interactive HTML table and as a JSONL
 log for further processing.
 
 ## Prerequisites
 
 * Python 3.11
-* Network access to fetch TLD data and Google trends information
+* Network access to fetch TLD data
 
 Install required Python packages using:
 
@@ -60,7 +60,6 @@ Available options:
 - `--dns-batch-size` – number of concurrent DNS lookups per batch
 - `--queue-size` – how many top-scoring combinations to retain before scanning
 - `--flush-interval` – seconds between HTML updates
-- `--trends-concurrency` – max concurrent Google Trends requests
 - `--dns-timeout` – timeout for DNS queries in seconds
 - `--lang` – language code for word frequency scoring
 - `--tld-cache-refresh` – revalidate cached TLD list using IANA headers

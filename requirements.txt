@@ -1,6 +1,5 @@
 aiohttp==3.9.3
 aiodns==3.0.0
-pytrends==4.9.2
 wordfreq==2.5.1
 tqdm==4.66.2
 jinja2==3.1.2
