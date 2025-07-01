@@ -47,6 +47,7 @@ Available options:
 - `--force-refresh` – ignore cache and fetch TLDs again
 - `--dns-batch-size` – number of concurrent DNS lookups per batch
 - `--queue-size` – how many top-scoring combinations to retain before scanning
+- `--flush-interval` – seconds between HTML updates
 
 The process may take a while as it scores thousands of potential domains and
 queries DNS. Progress information is printed to the console and recorded in
@@ -61,8 +62,9 @@ queries DNS. Progress information is printed to the console and recorded in
 * `sorted_domains.jsonl` – the full sorted list of all candidate combinations
   including those that are already taken.
 
-Running the script multiple times will append new findings to
-`results.jsonl` and update `domains.html`.
+Running the script multiple times will append new findings to `results.jsonl`.
+The HTML file is updated periodically in the background and on graceful
+shutdown, so progress can be monitored while the scan is running.
 
 ## Running tests
 
