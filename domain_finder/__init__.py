@@ -664,7 +664,9 @@ async def search_volume(
     from pytrends.request import TrendReq
 
     def _sync() -> int:
-        pytrend = TrendReq(hl="en-US", tz=360)
+        # Allow pytrends to retry on HTTP 429 errors. Using a small backoff
+        # factor helps mitigate rate limiting when many labels are queried.
+        pytrend = TrendReq(hl="en-US", tz=360, retries=retries, backoff_factor=0.5)
         pytrend.build_payload([label], timeframe="now 7-d")
         df = pytrend.interest_over_time()
         if df.empty:
@@ -750,7 +752,10 @@ async def autocomplete_count(
                 timeout=5,
             ) as resp:
                 resp.raise_for_status()
-                data = await resp.json()
+                # Google sometimes returns 'text/javascript' instead of
+                # 'application/json'. aiohttp's json() method validates the
+                # content type unless ``content_type=None`` is supplied.
+                data = await resp.json(content_type=None)
                 return len(data[1])
         except Exception as e:
             logger.error(f"Autocomplete fejl for '{label}' (forsøg {attempt + 1}): {e}")
