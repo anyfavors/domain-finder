@@ -265,7 +265,7 @@ class DomainFinder:
 <h2>Tilgængelige Domæner</h2>
 <table id='domains' class='table table-striped'>
 <caption class='caption-top'>Available domain names sorted by score</caption>
-<thead><tr><th>Navn</th><th>TLD</th><th>Score</th><th>Pris</th><th>n-gram</th><th>Volumen</th><th>Autocomplete</th></tr></thead>
+<thead><tr><th scope="col">Navn</th><th scope="col">TLD</th><th scope="col">Score</th><th scope="col">Pris</th><th scope="col">n-gram</th><th scope="col">Volumen</th><th scope="col">Autocomplete</th></tr></thead>
 <tbody>{rows}</tbody></table></div>
 <script src='https://code.jquery.com/jquery-3.6.0.min.js'></script>
 <script src='https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js'></script>
