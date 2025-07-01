@@ -38,9 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--queue-size", type=int, default=defaults.queue_size)
     parser.add_argument("--flush-interval", type=float, default=defaults.flush_interval)
     parser.add_argument(
-        "--trends-concurrency", type=int, default=defaults.trends_concurrency
-    )
-    parser.add_argument(
         "--autocomplete-concurrency",
         type=int,
         default=defaults.autocomplete_concurrency,
@@ -48,7 +45,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-length", type=float, default=defaults.weight_length)
     parser.add_argument("--weight-price", type=float, default=defaults.weight_price)
     parser.add_argument("--weight-ngram", type=float, default=defaults.weight_ngram)
-    parser.add_argument("--weight-volume", type=float, default=defaults.weight_volume)
     parser.add_argument("--weight-auto", type=float, default=defaults.weight_auto)
     parser.add_argument("--lang", type=str, default=defaults.lang)
     parser.add_argument(
@@ -101,12 +97,10 @@ def main() -> None:
         dns_timeout=args.dns_timeout,
         queue_size=args.queue_size,
         flush_interval=args.flush_interval,
-        trends_concurrency=args.trends_concurrency,
         autocomplete_concurrency=args.autocomplete_concurrency,
         weight_length=args.weight_length,
         weight_price=args.weight_price,
         weight_ngram=args.weight_ngram,
-        weight_volume=args.weight_volume,
         weight_auto=args.weight_auto,
         lang=args.lang,
         resume_from=args.resume_from,

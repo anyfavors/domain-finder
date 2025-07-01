@@ -115,23 +115,6 @@ def test_fetch_tlds_cache_expired(tmp_path):
     assert tlds == ["com"]
 
 
-def test_search_volume_cache(monkeypatch):
-    async def fake_sv(label, session, retries=3):
-        return 42
-
-    monkeypatch.setattr(domain, "search_volume", fake_sv)
-    cache = {}
-    res = asyncio.run(domain.gather_search_volumes(["abc"], cache, session=object()))
-    assert res == {"abc": 42}
-    assert cache["abc"]["volume"] == 42
-
-    async def fail_sv(label, session, retries=3):
-        raise AssertionError("called")
-
-    monkeypatch.setattr(domain, "search_volume", fail_sv)
-    res2 = asyncio.run(domain.gather_search_volumes(["abc"], cache, session=object()))
-    assert res2 == {"abc": 42}
-
 
 def test_autocomplete_cache(monkeypatch):
     async def fake_ac(label, session, retries=3):

@@ -22,7 +22,6 @@
         <th scope="col" aria-sort="none">Score</th>
         <th scope="col" aria-sort="none">Price</th>
         <th scope="col" aria-sort="none">n-gram</th>
-        <th scope="col" aria-sort="none">Volume</th>
         <th scope="col" aria-sort="none">Auto</th>
       </tr>
     </thead>
@@ -34,7 +33,6 @@
         <td>{{ r.score|default(0) }}</td>
         <td>{{ r.price }}</td>
         <td>{{ '%.2f' % r.ngram }}</td>
-        <td>{{ r.volume }}</td>
         <td>{{ r.auto }}</td>
       </tr>
     {% endfor %}

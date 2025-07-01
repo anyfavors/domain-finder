@@ -4,7 +4,6 @@ import domain_finder as domain
 
 def compute_scores(labels, tlds, stats, prices, cfg):
     ngram_scores = np.array([stats[label]["ngram"] for label in labels])
-    volume_arr = np.array([stats[label]["volume"] for label in labels])
     auto_arr = np.array([stats[label]["auto"] for label in labels])
     length_scores = np.array([stats[label]["length_s"] for label in labels])
     price_arr = np.array([prices[t] for t in tlds])
@@ -13,14 +12,12 @@ def compute_scores(labels, tlds, stats, prices, cfg):
     nn = (ngram_scores - ngram_scores.min()) / (
         ngram_scores.max() - ngram_scores.min() or 1
     )
-    vn = (volume_arr - volume_arr.min()) / (volume_arr.max() - volume_arr.min() or 1)
     an = (auto_arr - auto_arr.min()) / (auto_arr.max() - auto_arr.min() or 1)
 
     scores = (
         cfg.weight_length * length_scores[:, None]
         + cfg.weight_price * pn[None, :]
         + cfg.weight_ngram * nn[:, None]
-        + cfg.weight_volume * vn[:, None]
         + cfg.weight_auto * an[:, None]
     )
     return scores

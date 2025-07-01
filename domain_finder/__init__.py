@@ -63,13 +63,11 @@ class Config:
     queue_size: int = 10000
     score_batch_size: int = 1000
     flush_interval: float = 5.0
-    trends_concurrency: int = 5
     autocomplete_concurrency: int = 5
     lang: str = "en"
     weight_length: float = 0.3
     weight_price: float = 0.2
     weight_ngram: float = 0.2
-    weight_volume: float = 0.15
     weight_auto: float = 0.15
     resume_from: float | None = None
 
@@ -148,7 +146,6 @@ class DomainFinder:
         self.dns_timeout = config.dns_timeout
         self.queue_size = config.queue_size
         self.flush_interval = config.flush_interval
-        self.trends_concurrency = config.trends_concurrency
         self.autocomplete_concurrency = config.autocomplete_concurrency
         self.lang = config.lang
         self.tld_cache_file = config.tld_cache_file
@@ -160,7 +157,6 @@ class DomainFinder:
         self.weight_length = config.weight_length
         self.weight_price = config.weight_price
         self.weight_ngram = config.weight_ngram
-        self.weight_volume = config.weight_volume
         self.weight_auto = config.weight_auto
         self.resume_from = config.resume_from
 
@@ -429,26 +425,20 @@ class DomainFinder:
 
                 logger.info(f"Starter beregning af metrics for {len(labels)} labels")
 
-                volumes_task = gather_search_volumes(
-                    labels,
-                    self.metrics_cache,
-                    limit=self.trends_concurrency,
-                    session=session,
-                )
                 autos_task = gather_autocomplete_counts(
                     labels,
                     self.metrics_cache,
                     limit=self.autocomplete_concurrency,
                     session=session,
                 )
-                volumes, autos = await asyncio.gather(volumes_task, autos_task)
+                autos = await autos_task
+                volumes = {lbl: 0 for lbl in labels}
 
             ngram_scores = np.array(
                 [await asyncio.to_thread(ngram_score, lbl) for lbl in labels]
             )
             lengths = np.array([len(lbl) for lbl in labels])
             length_scores = (self.max_label_len - lengths + 1) / self.max_label_len
-            volume_arr = np.array([volumes.get(lbl, 0) for lbl in labels])
             auto_arr = np.array([autos.get(lbl, 0) for lbl in labels])
 
             tld_prices = {t: estimate_price(t) for t in tlds}
@@ -456,12 +446,12 @@ class DomainFinder:
             label_stats = {
                 lbl: {
                     "ngram": ngram,
-                    "volume": vol,
+                    "volume": 0,
                     "auto": auto,
                     "length_s": ls,
                 }
-                for lbl, ngram, vol, auto, ls in zip(
-                    labels, ngram_scores, volume_arr, auto_arr, length_scores
+                for lbl, ngram, auto, ls in zip(
+                    labels, ngram_scores, auto_arr, length_scores
                 )
             }
             logger.info("Færdig med label metrics")
@@ -471,12 +461,10 @@ class DomainFinder:
 
             price_vals = list(tld_prices.values())
             ngram_vals = [v["ngram"] for v in label_stats.values()]
-            volume_vals = [v["volume"] for v in label_stats.values()]
             auto_vals = [v["auto"] for v in label_stats.values()]
 
             min_price, max_price = min(price_vals), max(price_vals)
             min_ngram, max_ngram = min(ngram_vals), max(ngram_vals)
-            min_volume, max_volume = min(volume_vals), max(volume_vals)
             min_auto, max_auto = min(auto_vals), max(auto_vals)
 
             price_arr = np.array([tld_prices[t] for t in tlds])
@@ -491,11 +479,6 @@ class DomainFinder:
                 if max_ngram > min_ngram
                 else np.zeros_like(ngram_scores)
             )
-            vn = (
-                (volume_arr - min_volume) / (max_volume - min_volume)
-                if max_volume > min_volume
-                else np.zeros_like(volume_arr)
-            )
             an = (
                 (auto_arr - min_auto) / (max_auto - min_auto)
                 if max_auto > min_auto
@@ -507,10 +490,8 @@ class DomainFinder:
                 end = start + self.score_batch_size
                 batch_nn = nn[start:end]
                 batch_ln = length_scores[start:end]
-                batch_vn = vn[start:end]
                 batch_an = an[start:end]
                 batch_ngram = ngram_scores[start:end]
-                batch_volume = volume_arr[start:end]
                 batch_auto = auto_arr[start:end]
                 batch_labels = labels[start:end]
 
@@ -518,7 +499,6 @@ class DomainFinder:
                     self.weight_length * batch_ln[:, None]
                     + self.weight_price * pn[None, :]
                     + self.weight_ngram * batch_nn[:, None]
-                    + self.weight_volume * batch_vn[:, None]
                     + self.weight_auto * batch_an[:, None]
                 )
 
@@ -533,7 +513,7 @@ class DomainFinder:
                         tld=tlds[t],
                         price=tld_prices[tlds[t]],
                         ngram=float(batch_ngram[lbl_idx]),
-                        volume=int(batch_volume[lbl_idx]),
+                        volume=0,
                         auto=int(batch_auto[lbl_idx]),
                         length_s=float(batch_ln[lbl_idx]),
                         idx=int(start * len(tlds) + i),
@@ -666,79 +646,6 @@ def ngram_score(label):
     return zipf_frequency(label, "en")
 
 
-async def search_volume(
-    label: str,
-    session: aiohttp.ClientSession | None = None,
-    retries: int = 3,
-) -> int:
-    """Fetch Google Trends search volume for a label using ``pytrends``."""
-
-    from pytrends.request import TrendReq
-
-    def _sync() -> int:
-        # Allow pytrends to retry on HTTP 429 errors. Using a small backoff
-        # factor helps mitigate rate limiting when many labels are queried.
-        pytrend = TrendReq(hl="en-US", tz=360, retries=retries, backoff_factor=0.5)
-        pytrend.build_payload([label], timeframe="now 7-d")
-        df = pytrend.interest_over_time()
-        if df.empty:
-            return 0
-        return int(df[label].max())
-
-    for attempt in range(retries):
-        try:
-            return await asyncio.to_thread(_sync)
-        except Exception as e:
-            logger.error(
-                f"Google Trends fejl for '{label}' (forsøg {attempt + 1}): {e}"
-            )
-            if attempt < retries - 1:
-                await asyncio.sleep(1)
-
-    return 0
-
-
-async def gather_search_volumes(
-    labels: Sequence[str],
-    cache: dict[str, dict[str, int]] | None = None,
-    limit: int | None = None,
-    session: aiohttp.ClientSession | None = None,
-) -> dict[str, int]:
-    """Fetch search volume for all labels concurrently with optional caching.
-
-    Args:
-        labels: Iterable of label strings.
-        cache: Optional metrics cache.
-        limit: Maximum number of concurrent requests.
-    """
-    results: dict[str, int] = {}
-    to_fetch: list[str] = []
-    if cache is not None:
-        for lbl in labels:
-            if lbl in cache and "volume" in cache[lbl]:
-                results[lbl] = cache[lbl]["volume"]
-            else:
-                to_fetch.append(lbl)
-    else:
-        to_fetch = list(labels)
-
-    if to_fetch:
-        if session is None:
-            raise RuntimeError("session required")
-        progress = tqdm(total=len(to_fetch), desc="trends")
-        sem = asyncio.Semaphore(limit or len(to_fetch))
-
-        async def fetch(lbl: str) -> None:
-            async with sem:
-                val = await search_volume(lbl, session)
-                results[lbl] = val
-                if cache is not None:
-                    cache.setdefault(lbl, {})["volume"] = val
-                progress.update(1)
-
-        await asyncio.gather(*(fetch(lbl) for lbl in to_fetch))
-        progress.close()
-    return results
 
 
 async def autocomplete_count(
