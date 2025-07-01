@@ -98,6 +98,10 @@ class Candidate:
             s += f" ({self.score:.4f})"
         return s
 
+    def __lt__(self, other: "Candidate") -> bool:
+        """Provide a deterministic ordering for heap operations."""
+        return self.idx < other.idx
+
 
 def candidate_to_dict(c: "Candidate") -> dict:
     """Convert a ``Candidate`` to a serializable dictionary."""
