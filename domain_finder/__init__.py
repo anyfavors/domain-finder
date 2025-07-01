@@ -2,7 +2,6 @@
 import socket
 import time
 import json
-import signal
 import sys
 import logging
 import asyncio
@@ -185,7 +184,9 @@ class DomainFinder:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        self.stop_flush_thread()
+        task = self.stop_flush_thread()
+        if task is not None:
+            await task
         await self.stop_writer()
         await self.save_metrics_cache()
 
@@ -211,13 +212,24 @@ class DomainFinder:
             self._flush_thread.start()
             atexit.register(self.stop_flush_thread)
 
-    def stop_flush_thread(self) -> None:
-        """Stop background flush thread and write final HTML."""
+    def stop_flush_thread(self) -> asyncio.Task | None:
+        """Stop background flush thread and write final HTML.
+
+        Returns:
+            An ``asyncio.Task`` if called from within a running loop,
+            otherwise ``None``.
+        """
         if self._flush_thread is not None:
             self._flush_event.set()
             self._flush_thread.join()
             self._flush_thread = None
-        asyncio.run(self.write_html(self.found))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.write_html(self.found))
+            return None
+        else:
+            return loop.create_task(self.write_html(self.found))
 
     async def _writer(self) -> None:
         assert self._writer_queue is not None
@@ -389,12 +401,13 @@ class DomainFinder:
         async with aiofiles.open(self.html_out, "w") as f:
             await f.write(html)
 
-    def graceful_exit(self, signum, frame) -> None:
-        """Handle SIGINT by saving HTML output and exiting."""
+    async def graceful_exit(self) -> None:
+        """Write pending output and metrics before exiting."""
         logger.info("Afslutter og gemmer HTML...")
-        self.stop_flush_thread()
-        asyncio.run(self.save_metrics_cache())
-        sys.exit(0)
+        task = self.stop_flush_thread()
+        if task is not None:
+            await task
+        await self.save_metrics_cache()
 
     async def run(self) -> None:
         """Execute the main domain finder workflow."""
@@ -407,36 +420,39 @@ class DomainFinder:
             ],
         )
 
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self.graceful_exit)
-
-        await self.load_progress()
-        self.start_flush_thread()
-        self.start_writer()
-        await self.load_metrics_cache()
-        if self.sorted_list_file.exists() and not self.force_refresh:
-            logger.info(f"Genoptager fra {self.sorted_list_file}")
-            with open(self.sorted_list_file) as f:
-                raw = [candidate_from_dict(json.loads(line)) for line in f]
-        else:
-            async with aiohttp.ClientSession() as session:
-                tlds = await self.fetch_tlds(session)
-                labels = list(
-                    generate_labels_markov(
-                        self.num_candidates, self.max_label_len, self.lang
+        try:
+            await self.load_progress()
+            self.start_flush_thread()
+            self.start_writer()
+            await self.load_metrics_cache()
+            if self.sorted_list_file.exists() and not self.force_refresh:
+                logger.info(f"Genoptager fra {self.sorted_list_file}")
+                with open(self.sorted_list_file) as f:
+                    raw = [candidate_from_dict(json.loads(line)) for line in f]
+            else:
+                async with aiohttp.ClientSession() as session:
+                    tlds = await self.fetch_tlds(session)
+                    if not tlds:
+                        logger.error("Kunne ikke hente TLDs; afbryder.")
+                        return
+                    labels = list(
+                        generate_labels_markov(
+                            self.num_candidates, self.max_label_len, self.lang
+                        )
                     )
-                )
 
-                logger.info(f"Starter beregning af metrics for {len(labels)} labels")
+                    logger.info(
+                        f"Starter beregning af metrics for {len(labels)} labels"
+                    )
 
-                autos_task = gather_autocomplete_counts(
-                    labels,
-                    self.metrics_cache,
-                    limit=self.autocomplete_concurrency,
-                    session=session,
-                )
-                autos = await autos_task
-                volumes = {lbl: 0 for lbl in labels}
+                    autos_task = gather_autocomplete_counts(
+                        labels,
+                        self.metrics_cache,
+                        limit=self.autocomplete_concurrency,
+                        session=session,
+                    )
+                    autos = await autos_task
+                    volumes = {lbl: 0 for lbl in labels}
 
             ngram_scores = np.array(
                 [await asyncio.to_thread(ngram_score, lbl) for lbl in labels]
@@ -537,12 +553,17 @@ class DomainFinder:
 
             await self.save_sorted_list(raw)
 
-        logger.info("Starter DNS-scanning af sorteret liste...")
-        await self.scan_domains(raw)
-        logger.info("Scanning færdig.")
-        await self.stop_writer()
-        self.stop_flush_thread()
-        await self.save_metrics_cache()
+            logger.info("Starter DNS-scanning af sorteret liste...")
+            await self.scan_domains(raw)
+            logger.info("Scanning færdig.")
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logger.info("Afbrudt af bruger (CTRL+C)")
+        finally:
+            await self.stop_writer()
+            task = self.stop_flush_thread()
+            if task is not None:
+                await task
+            await self.save_metrics_cache()
 
     async def _check_record(self, r: Candidate, resolver: aiodns.DNSResolver) -> None:
         """Helper to check a single record and save if available."""
@@ -569,16 +590,20 @@ class DomainFinder:
         progress = tqdm(total=len(raw), desc="DNS")
 
         async def worker() -> None:
-            while not queue.empty():
+            while True:
                 try:
                     r = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if (r.name, r.tld) not in self.processed:
-                    await self._check_record(r, resolver)
-                    await asyncio.sleep(self.throttle)
-                queue.task_done()
-                progress.update(1)
+                try:
+                    if (r.name, r.tld) not in self.processed:
+                        await self._check_record(r, resolver)
+                        await asyncio.sleep(self.throttle)
+                except Exception as e:
+                    logger.error(f"Fejl ved DNS-scan af {r.name}.{r.tld}: {e}")
+                finally:
+                    queue.task_done()
+                    progress.update(1)
 
         workers = [asyncio.create_task(worker()) for _ in range(self.dns_batch_size)]
         await queue.join()
@@ -811,6 +836,9 @@ async def dns_available(
         return False
     except aiodns.error.DNSError:
         return True
+    except Exception as e:
+        logger.error(f"DNS lookup fejl for {domain}: {e}")
+        return False
 
 
 # --- Score funktion for multiprocessing --- #
