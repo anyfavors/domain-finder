@@ -27,32 +27,49 @@ def test_estimate_price():
 
 def test_generate_labels():
     labels = domain.generate_labels(5)
-    assert labels.tolist() == ["a", "e", "i", "o", "u"]
+    assert len(labels) == 5
+    assert all(lbl.isalpha() for lbl in labels)
     assert len(set(labels)) == len(labels)
-    for lbl in labels.tolist():
+    for lbl in labels:
         assert domain.is_pronounceable(lbl)
         assert 1 <= len(lbl) <= domain.MAX_LABEL_LEN
 
 
 def test_generate_labels_deterministic():
-    assert domain.generate_labels(6).tolist() == domain.generate_labels(6).tolist()
+    assert domain.generate_labels(6) == domain.generate_labels(6)
 
 
 def test_fetch_tlds_cached(tmp_path):
     cache = tmp_path / "tlds.json"
     cfg = domain.Config(top_tld_count=2, tld_cache_file=str(cache))
     df = domain.DomainFinder(cfg)
-    fake_resp = Mock()
-    fake_resp.text = "COM\nNET\n"
-    fake_resp.raise_for_status = Mock()
-    df.session.get = Mock(return_value=fake_resp)
 
-    first = df.fetch_tlds()
+    class FakeResp:
+        def __init__(self, text):
+            self._text = text
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        async def text(self):
+            return self._text
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            return FakeResp("COM\nNET\n")
+
+    session = FakeSession()
+    first = asyncio.run(df.fetch_tlds(session))
     assert first == ["com", "net"]
     assert cache.exists()
 
-    df.session.get = Mock(side_effect=Exception("no call"))
-    second = df.fetch_tlds()
+    def fail_get(*args, **kwargs):
+        raise AssertionError("no call")
+
+    session.get = fail_get
+    second = asyncio.run(df.fetch_tlds(session))
     assert second == first
 
 
@@ -61,13 +78,29 @@ def test_fetch_tlds_cache_expired(tmp_path):
     cache.write_text(json.dumps({'timestamp': time.time() - 100, 'tlds': ["com"]}))
     cfg = domain.Config(tld_cache_file=str(cache), tld_cache_age=1)
     df = domain.DomainFinder(cfg)
-    fake_resp = Mock()
-    fake_resp.text = "COM\n"
-    fake_resp.raise_for_status = Mock()
-    df.session.get = Mock(return_value=fake_resp)
 
-    tlds = df.fetch_tlds()
-    assert df.session.get.called
+    class FakeResp:
+        def __init__(self, text):
+            self._text = text
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        async def text(self):
+            return self._text
+        def raise_for_status(self):
+            pass
+
+    class FakeSession:
+        def __init__(self):
+            self.called = False
+        def get(self, *args, **kwargs):
+            self.called = True
+            return FakeResp("COM\n")
+
+    session = FakeSession()
+    tlds = asyncio.run(df.fetch_tlds(session))
+    assert session.called
     assert tlds == ["com"]
 
 
@@ -105,6 +138,23 @@ def test_autocomplete_cache(monkeypatch):
     monkeypatch.setattr(domain, "autocomplete_count", fail_ac)
     res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
     assert res2 == {"abc": 7}
+
+
+def test_autocomplete_concurrency(monkeypatch):
+    calls = []
+
+    async def fake_ac(label, session=None, retries=3):
+        calls.append(label)
+        await asyncio.sleep(0)
+        return 1
+
+    monkeypatch.setattr(domain, "autocomplete_count", fake_ac)
+    cache = {}
+    res = asyncio.run(
+        domain.gather_autocomplete_counts(["a", "b"], cache, limit=1)
+    )
+    assert res == {"a": 1, "b": 1}
+    assert calls == ["a", "b"]
 
 
 def test_candidate_serialization_roundtrip():

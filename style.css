@@ -1,0 +1,4 @@
+body{font-family:sans-serif;padding:1rem;background:#fff;color:#000}
+body.dark{background:#222;color:#eee}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #ccc;padding:0.5rem;text-align:left}
