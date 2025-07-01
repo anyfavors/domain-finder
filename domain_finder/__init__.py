@@ -153,6 +153,7 @@ class DomainFinder:
         self.resume_from = config.resume_from
 
         from jinja2 import Environment, FileSystemLoader
+
         self.env = Environment(loader=FileSystemLoader("templates"))
 
         self.config = config
@@ -853,7 +854,9 @@ def generate_labels_markov(
                     break
         attempts += 1
     if attempts >= max_attempts and len(labels) < n:
-        logger.warning("Kunne kun generere %d labels efter %d forsøg", len(labels), attempts)
+        logger.warning(
+            "Kunne kun generere %d labels efter %d forsøg", len(labels), attempts
+        )
     logger.info(f"Markov-genereret {len(labels)} labels")
     return list(labels)
 

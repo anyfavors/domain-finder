@@ -51,7 +51,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-volume", type=float, default=defaults.weight_volume)
     parser.add_argument("--weight-auto", type=float, default=defaults.weight_auto)
     parser.add_argument("--lang", type=str, default=defaults.lang)
-    parser.add_argument("--resume-from", type=float, default=None, help="only process results newer than timestamp")
+    parser.add_argument(
+        "--resume-from",
+        type=float,
+        default=None,
+        help="only process results newer than timestamp",
+    )
     args = parser.parse_args()
     if args.config:
         import tomllib

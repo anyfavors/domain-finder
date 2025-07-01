@@ -8,6 +8,7 @@ import time
 import asyncio
 
 import domain_finder as domain
+
 domain.ngram_score.cache_clear()
 
 
