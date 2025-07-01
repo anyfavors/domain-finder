@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <title>Available Domains</title>
+</head>
+<body>
+<header>
+  <h1>Available Domains</h1>
+  <button onclick="toggleTheme()">Toggle theme</button>
+</header>
+<main>
+  <input id="filter" aria-label="Filter domains" oninput="filterTable()" placeholder="Filter...">
+  <table role="table" aria-label="Available domains">
+    <thead>
+      <tr>
+        <th scope="col" aria-sort="none">Name</th>
+        <th scope="col" aria-sort="none">TLD</th>
+        <th scope="col" aria-sort="none">Score</th>
+        <th scope="col" aria-sort="none">Price</th>
+        <th scope="col" aria-sort="none">n-gram</th>
+        <th scope="col" aria-sort="none">Volume</th>
+        <th scope="col" aria-sort="none">Auto</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in results %}
+      <tr tabindex="0">
+        <td>{{ r.name }}</td>
+        <td>{{ r.tld }}</td>
+        <td>{{ r.score|default(0) }}</td>
+        <td>{{ r.price }}</td>
+        <td>{{ '%.2f' % r.ngram }}</td>
+        <td>{{ r.volume }}</td>
+        <td>{{ r.auto }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</main>
+<script src="table.js"></script>
+</body>
+</html>

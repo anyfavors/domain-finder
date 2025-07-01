@@ -3,10 +3,10 @@ import domain_finder as domain
 
 
 def compute_scores(labels, tlds, stats, prices, cfg):
-    ngram_scores = np.array([stats[l]["ngram"] for l in labels])
-    volume_arr = np.array([stats[l]["volume"] for l in labels])
-    auto_arr = np.array([stats[l]["auto"] for l in labels])
-    length_scores = np.array([stats[l]["length_s"] for l in labels])
+    ngram_scores = np.array([stats[label]["ngram"] for label in labels])
+    volume_arr = np.array([stats[label]["volume"] for label in labels])
+    auto_arr = np.array([stats[label]["auto"] for label in labels])
+    length_scores = np.array([stats[label]["length_s"] for label in labels])
     price_arr = np.array([prices[t] for t in tlds])
 
     pn = (price_arr - price_arr.min()) / (price_arr.max() - price_arr.min() or 1)
