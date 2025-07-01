@@ -67,6 +67,11 @@ Running the script multiple times will append new findings to `results.jsonl`.
 The HTML file is updated periodically in the background and on graceful
 shutdown, so progress can be monitored while the scan is running.
 
+## Continuous integration
+
+A GitHub Actions workflow in `.github/workflows/ci.yml` installs dependencies
+and runs the test suite on every push or pull request.
+
 ## Running tests
 
 Install pytest and run the suite from the repository root:

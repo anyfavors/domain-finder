@@ -42,6 +42,11 @@ class Config:
     flush_interval: float = 5.0
     trends_concurrency: int = 5
     autocomplete_concurrency: int = 5
+    weight_length: float = 0.3
+    weight_price: float = 0.2
+    weight_ngram: float = 0.2
+    weight_volume: float = 0.15
+    weight_auto: float = 0.15
 
 # --- KONSTANTER --- #
 DEFAULT_CONFIG = Config()
@@ -77,6 +82,7 @@ class Candidate:
     auto: int
     length_s: float
     idx: int
+    available: bool = True
 
 
 def candidate_to_dict(c: "Candidate") -> dict:
@@ -85,6 +91,7 @@ def candidate_to_dict(c: "Candidate") -> dict:
     data = asdict(c)
     if hasattr(c, "score"):
         data["score"] = c.score
+    data["available"] = c.available
     return data
 
 
@@ -100,6 +107,7 @@ def candidate_from_dict(data: dict) -> "Candidate":
         auto=data["auto"],
         length_s=data["length_s"],
         idx=data["idx"],
+        available=data.get("available", True),
     )
     if "score" in data:
         c.score = data["score"]
@@ -131,6 +139,11 @@ class DomainFinder:
         self.metrics_cache_file = config.metrics_cache_file
         self.force_refresh = config.force_refresh
         self.score_batch_size = config.score_batch_size
+        self.weight_length = config.weight_length
+        self.weight_price = config.weight_price
+        self.weight_ngram = config.weight_ngram
+        self.weight_volume = config.weight_volume
+        self.weight_auto = config.weight_auto
 
         self.config = config
 
@@ -145,7 +158,7 @@ class DomainFinder:
     def _flush_worker(self) -> None:
         """Periodically write HTML output until the event is set."""
         while not self._flush_event.wait(self.flush_interval):
-            self.write_html(self.found)
+            asyncio.run(self.write_html(self.found))
 
     def start_flush_thread(self) -> None:
         """Start background thread for periodic HTML flushing."""
@@ -163,7 +176,7 @@ class DomainFinder:
             self._flush_event.set()
             self._flush_thread.join()
             self._flush_thread = None
-        self.write_html(self.found)
+        asyncio.run(self.write_html(self.found))
 
     async def fetch_tlds(self, session: aiohttp.ClientSession, retries: int = 3) -> list[str]:
         """Fetch a list of preferred TLDs from IANA with local caching."""
@@ -214,23 +227,28 @@ class DomainFinder:
                     rec_dict = json.loads(line)
                     cand = candidate_from_dict(rec_dict)
                     self.processed.add((cand.name, cand.tld))
-                    self.found.append(cand)
+                    if cand.available:
+                        self.found.append(cand)
             logging.info(
                 f"Indlæste {len(self.found)} gemte domæner fra {self.jsonl_file}"
             )
         except FileNotFoundError:
             logging.info("Ingen tidligere data. Starter forfra.")
 
-    def save_record(self, rec: Candidate) -> None:
-        """Append a domain record to the JSONL log file."""
-        with open(self.jsonl_file, 'a') as f:
-            f.write(json.dumps(candidate_to_dict(rec)) + '\n')
+    async def save_record(self, rec: Candidate) -> None:
+        """Append a domain record to the JSONL log file asynchronously."""
+        import aiofiles
 
-    def save_sorted_list(self, sorted_list: list[Candidate]) -> None:
-        """Write the sorted candidate list to disk."""
-        with open(self.sorted_list_file, 'w') as f:
+        async with aiofiles.open(self.jsonl_file, "a") as f:
+            await f.write(json.dumps(candidate_to_dict(rec)) + "\n")
+
+    async def save_sorted_list(self, sorted_list: list[Candidate]) -> None:
+        """Write the sorted candidate list to disk asynchronously."""
+        import aiofiles
+
+        async with aiofiles.open(self.sorted_list_file, "w") as f:
             for r in sorted_list:
-                f.write(json.dumps(candidate_to_dict(r)) + '\n')
+                await f.write(json.dumps(candidate_to_dict(r)) + "\n")
         logging.info(f"Gemte sorteret liste til {self.sorted_list_file}")
 
     # -- Metrics cache helpers -- #
@@ -258,7 +276,7 @@ class DomainFinder:
         except Exception as e:
             logging.error(f"Kunne ikke gemme metrics cache: {e}")
 
-    def write_html(self, results: list[Candidate]) -> None:
+    async def write_html(self, results: list[Candidate]) -> None:
         """Generate and write HTML output for available domains using Jinja2."""
         from jinja2 import Template
 
@@ -301,8 +319,9 @@ function toggleTheme(){document.body.classList.toggle('dark');}
 """
         )
         html = template.render(results=results)
-        with open(self.html_out, 'w') as f:
-            f.write(html)
+        import aiofiles
+        async with aiofiles.open(self.html_out, "w") as f:
+            await f.write(html)
 
     def graceful_exit(self, signum, frame) -> None:
         """Handle SIGINT by saving HTML output and exiting."""
@@ -381,41 +400,60 @@ function toggleTheme(){document.body.classList.toggle('dark');}
         min_volume, max_volume = min(volume_vals), max(volume_vals)
         min_auto, max_auto = min(auto_vals), max(auto_vals)
 
-        import heapq
-
-        heap: list[tuple[float, Candidate]] = []
-        idx = 0
         price_arr = np.array([tld_prices[t] for t in tlds])
-        pn = (price_arr - min_price) / (max_price - min_price) if max_price > min_price else np.zeros_like(price_arr)
+        pn = (
+            (price_arr - min_price) / (max_price - min_price)
+            if max_price > min_price
+            else np.zeros_like(price_arr)
+        )
 
-        for lbl in tqdm(labels, desc='Scoring', unit='label'):
-            stats = label_stats[lbl]
-            nn = (stats['ngram'] - min_ngram) / (max_ngram - min_ngram) if max_ngram > min_ngram else 0
-            vn = (stats['volume'] - min_volume) / (max_volume - min_volume) if max_volume > min_volume else 0
-            an = (stats['auto'] - min_auto) / (max_auto - min_auto) if max_auto > min_auto else 0
-            ls = stats['length_s']
-            scores = 0.3 * ls + 0.2 * pn + 0.2 * nn + 0.15 * vn + 0.15 * an
-            for tld, score in zip(tlds, scores):
-                cand = Candidate(
-                    name=lbl,
-                    tld=tld,
-                    price=tld_prices[tld],
-                    ngram=stats['ngram'],
-                    volume=stats['volume'],
-                    auto=stats['auto'],
-                    length_s=ls,
-                    idx=idx,
-                )
-                idx += 1
-                score = round(float(score), 4)
-                cand.score = score
-                if len(heap) < self.queue_size:
-                    heapq.heappush(heap, (score, cand))
-                elif score > heap[0][0]:
-                    heapq.heapreplace(heap, (score, cand))
+        nn = (
+            (ngram_scores - min_ngram) / (max_ngram - min_ngram)
+            if max_ngram > min_ngram
+            else np.zeros_like(ngram_scores)
+        )
+        vn = (
+            (volume_arr - min_volume) / (max_volume - min_volume)
+            if max_volume > min_volume
+            else np.zeros_like(volume_arr)
+        )
+        an = (
+            (auto_arr - min_auto) / (max_auto - min_auto)
+            if max_auto > min_auto
+            else np.zeros_like(auto_arr)
+        )
 
-        raw = [c for _, c in sorted(heap, key=lambda x: x[0], reverse=True)]
-        self.save_sorted_list(raw)
+        scores = (
+            self.weight_length * length_scores[:, None]
+            + self.weight_price * pn[None, :]
+            + self.weight_ngram * nn[:, None]
+            + self.weight_volume * vn[:, None]
+            + self.weight_auto * an[:, None]
+        )
+
+        flat_scores = scores.ravel()
+        top_n = min(self.queue_size, flat_scores.size)
+        idxs = np.argpartition(flat_scores, -top_n)[-top_n:]
+        sorted_idx = idxs[np.argsort(flat_scores[idxs])[::-1]]
+
+        raw: list[Candidate] = []
+        for i in sorted_idx:
+            li = i // len(tlds)
+            ti = i % len(tlds)
+            cand = Candidate(
+                name=labels[li],
+                tld=tlds[ti],
+                price=tld_prices[tlds[ti]],
+                ngram=ngram_scores[li],
+                volume=volume_arr[li],
+                auto=auto_arr[li],
+                length_s=length_scores[li],
+                idx=int(i),
+            )
+            cand.score = round(float(flat_scores[i]), 4)
+            raw.append(cand)
+
+        await self.save_sorted_list(raw)
 
         logging.info("Starter DNS-scanning af sorteret liste...")
         await self.scan_domains(raw)
@@ -423,23 +461,30 @@ function toggleTheme(){document.body.classList.toggle('dark');}
         self.stop_flush_thread()
         self.save_metrics_cache()
 
-    async def _check_record(self, r: Candidate) -> None:
+    async def _check_record(self, r: Candidate, resolver: aiodns.DNSResolver) -> None:
         """Helper to check a single record and save if available."""
         key = (r.name, r.tld)
         domain = f"{r.name}.{r.tld}"
-        if await dns_available(domain):
-            rec = candidate_from_dict(candidate_to_dict(r))
+        available = await dns_available(domain, resolver)
+        rec = candidate_from_dict(candidate_to_dict(r))
+        rec.available = available
+        self.processed.add(key)
+        if available:
             self.found.append(rec)
-            self.processed.add(key)
-            self.save_record(rec)
-            logging.info(f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}")
+            logging.info(
+                f"Fundet ledigt: {domain} Score: {getattr(r, 'score', 0)}"
+            )
+        await self.save_record(rec)
 
     async def scan_domains(self, raw: list[Candidate]) -> None:
         """Check domain availability for all records in batches."""
-        for i in tqdm(range(0, len(raw), self.dns_batch_size), desc='DNS-scanning', unit='batch'):
+        resolver = aiodns.DNSResolver()
+        for i in tqdm(
+            range(0, len(raw), self.dns_batch_size), desc="DNS-scanning", unit="batch"
+        ):
             batch = raw[i : i + self.dns_batch_size]
             tasks = [
-                asyncio.create_task(self._check_record(r))
+                asyncio.create_task(self._check_record(r, resolver))
                 for r in batch
                 if (r.name, r.tld) not in self.processed
             ]
@@ -489,6 +534,16 @@ def parse_args():
                         help='max concurrent Google Trends requests')
     parser.add_argument('--autocomplete-concurrency', type=int, default=defaults.autocomplete_concurrency,
                         help='max concurrent autocomplete requests')
+    parser.add_argument('--weight-length', type=float, default=defaults.weight_length,
+                        help='scoring weight for label length')
+    parser.add_argument('--weight-price', type=float, default=defaults.weight_price,
+                        help='scoring weight for domain price')
+    parser.add_argument('--weight-ngram', type=float, default=defaults.weight_ngram,
+                        help='scoring weight for ngram score')
+    parser.add_argument('--weight-volume', type=float, default=defaults.weight_volume,
+                        help='scoring weight for search volume')
+    parser.add_argument('--weight-auto', type=float, default=defaults.weight_auto,
+                        help='scoring weight for autocomplete')
     return parser.parse_args()
 
 
@@ -745,34 +800,34 @@ async def gather_autocomplete_counts(
     return results
 
 
-def generate_labels(n, max_label_len: int = Config().max_label_len) -> list[str]:
-    """Generate a deterministic list of pronounceable labels with pruning."""
+def generate_labels(n: int, max_label_len: int = Config().max_label_len) -> list[str]:
+    """Generate pronounceable labels using iterative breadth-first search."""
 
-    letters = 'abcdefghijklmnopqrstuvwxyz'
+    letters = "abcdefghijklmnopqrstuvwxyz"
     logging.info(f"Starter generering af {n} labels")
     results: list[str] = []
+    from collections import deque
 
-    def build(prefix: str, run: int) -> None:
-        if len(results) >= n:
-            return
+    queue: deque[tuple[str, int]] = deque([("", 0)])
+    while queue and len(results) < n:
+        prefix, run = queue.popleft()
         if prefix and is_pronounceable(prefix):
             results.append(prefix)
             if len(results) >= n:
-                return
+                break
         if len(prefix) >= max_label_len:
-            return
+            continue
         for ch in letters:
             new_run = run + 1 if ch not in VOWELS else 0
             if new_run >= 3:
                 continue
-            build(prefix + ch, new_run)
+            queue.append((prefix + ch, new_run))
 
-    build('', 0)
     logging.info(f"Genereret {len(results)} udtalelige labels")
     return results
 
 
-async def dns_available(domain: str) -> bool:
+async def dns_available(domain: str, resolver: aiodns.DNSResolver | None = None) -> bool:
     """Asynchronously check whether a domain name resolves.
 
     Args:
@@ -781,7 +836,8 @@ async def dns_available(domain: str) -> bool:
     Returns:
         True if no DNS record was found.
     """
-    resolver = aiodns.DNSResolver()
+    if resolver is None:
+        resolver = aiodns.DNSResolver()
     try:
         await resolver.gethostbyname(domain, socket.AF_INET)
         return False
@@ -813,6 +869,11 @@ def main():
         flush_interval=args.flush_interval,
         trends_concurrency=args.trends_concurrency,
         autocomplete_concurrency=args.autocomplete_concurrency,
+        weight_length=args.weight_length,
+        weight_price=args.weight_price,
+        weight_ngram=args.weight_ngram,
+        weight_volume=args.weight_volume,
+        weight_auto=args.weight_auto,
     )
     finder = DomainFinder(cfg)
     asyncio.run(finder.run())

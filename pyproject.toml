@@ -1,0 +1,19 @@
+[project]
+name = "domain-finder"
+version = "0.1.0"
+description = "Utility for discovering available domains"
+authors = [{name = "Example", email = "example@example.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp==3.9.3",
+    "aiodns==3.0.0",
+    "pytrends==4.9.2",
+    "wordfreq==2.5.1",
+    "tqdm==4.66.2",
+    "jinja2==3.1.2",
+    "aiofiles==23.2.1"
+]
+
+[project.scripts]
+domain-finder = "domain_finder.__main__:main"

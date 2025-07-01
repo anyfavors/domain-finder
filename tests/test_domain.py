@@ -8,7 +8,7 @@ import time
 import asyncio
 from unittest.mock import Mock
 
-import domain
+import domain_finder as domain
 
 
 def test_is_pronounceable():
