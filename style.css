@@ -1,4 +1,10 @@
-body{font-family:sans-serif;padding:1rem;background:#fff;color:#000}
-body.dark{background:#222;color:#eee}
-table{border-collapse:collapse;width:100%}
+:root{
+  --bg:#fff;
+  --fg:#000;
+  --accent:#0366d6;
+}
+body{font-family:sans-serif;padding:1rem;background:var(--bg);color:var(--fg);margin:0}
+body.dark{--bg:#222;--fg:#eee;background:var(--bg);color:var(--fg)}
+table{border-collapse:collapse;width:100%;overflow-x:auto}
 th,td{border:1px solid #ccc;padding:0.5rem;text-align:left}
+@media(max-width:600px){th,td{font-size:0.8rem}}
