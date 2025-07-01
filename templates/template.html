@@ -13,6 +13,7 @@
 </header>
 <main>
   <input id="filter" aria-label="Filter domains" oninput="filterTable()" placeholder="Filter...">
+  <p class="hint">Use ↑/↓ to move focus, N/P keys to change page.</p>
   <table role="table" aria-label="Available domains">
     <thead>
       <tr>
@@ -28,7 +29,7 @@
     <tbody>
     {% for r in results %}
       <tr tabindex="0">
-        <td>{{ r.name }}</td>
+        <td><a href="http://{{ r.name }}.{{ r.tld }}" target="_blank" rel="noopener">{{ r.name }}</a></td>
         <td>{{ r.tld }}</td>
         <td>{{ r.score|default(0) }}</td>
         <td>{{ r.price }}</td>

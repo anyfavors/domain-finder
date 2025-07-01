@@ -22,17 +22,26 @@ pip install -r requirements.txt
 
 ## Running the script
 
-Simply execute the script with Python:
+Run the tool using the module entry point or the installed console script:
 
 ```bash
-python domain.py
+python -m domain_finder
 ```
 
-You can override several settings using command line options. Example:
+or simply:
 
 ```bash
-python domain.py --num-candidates 500 --max-label-len 3 \
+domain-finder --num-candidates 500 --max-label-len 3 \
   --top-tld-count 100 --html-out mydomains.html --force-refresh
+```
+
+### Installed usage
+
+After installing the package (`pip install .`), the command `domain-finder` is
+available on your `$PATH`. Use it the same way as the module invocation:
+
+```bash
+domain-finder --help
 ```
 
 Available options:

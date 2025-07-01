@@ -4,7 +4,7 @@
   --accent:#0366d6;
 }
 body{font-family:sans-serif;padding:1rem;background:var(--bg);color:var(--fg);margin:0}
-body.dark{--bg:#222;--fg:#eee;background:var(--bg);color:var(--fg)}
+body.dark{--bg:#111;--fg:#f5f5f5;background:var(--bg);color:var(--fg)}
 tr:focus{outline:2px solid var(--accent)}
 button:focus{outline:2px solid var(--accent)}
 table{border-collapse:collapse;width:100%;overflow-x:auto}
