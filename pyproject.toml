@@ -19,6 +19,12 @@ dependencies = [
 [project.scripts]
 domain-finder = "domain_finder.__main__:main"
 
+[tool.setuptools.packages.find]
+include = ["domain_finder"]
+
+[tool.setuptools.package-data]
+"domain_finder" = ["templates/*.html", "style.css", "table.js"]
+
 [tool.black]
 line-length = 88
 
