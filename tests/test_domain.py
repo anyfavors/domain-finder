@@ -8,6 +8,7 @@ import time
 import asyncio
 
 import domain_finder as domain
+domain.ngram_score.cache_clear()
 
 
 def test_is_pronounceable():
@@ -35,6 +36,7 @@ def test_generate_labels():
 
 
 def test_generate_labels_deterministic():
+    # generate_labels should be deterministic given the same inputs
     assert list(domain.generate_labels(6)) == list(domain.generate_labels(6))
 
 

@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-volume", type=float, default=defaults.weight_volume)
     parser.add_argument("--weight-auto", type=float, default=defaults.weight_auto)
     parser.add_argument("--lang", type=str, default=defaults.lang)
+    parser.add_argument("--resume-from", type=float, default=None, help="only process results newer than timestamp")
     args = parser.parse_args()
     if args.config:
         import tomllib
@@ -64,10 +65,15 @@ def parse_args() -> argparse.Namespace:
             else:
                 data = json.loads(text)
         except Exception:
-            pass
+            logging.warning("Could not parse config file %s", args.config)
         for k, v in data.items():
             if hasattr(args, k):
                 setattr(args, k, v)
+
+    if args.max_label_len <= 0:
+        parser.error("--max-label-len must be > 0")
+    if args.dns_batch_size <= 0:
+        parser.error("--dns-batch-size must be > 0")
     return args
 
 
@@ -98,6 +104,7 @@ def main() -> None:
         weight_volume=args.weight_volume,
         weight_auto=args.weight_auto,
         lang=args.lang,
+        resume_from=args.resume_from,
     )
 
     logging.basicConfig(

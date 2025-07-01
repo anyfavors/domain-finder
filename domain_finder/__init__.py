@@ -9,6 +9,7 @@ import asyncio
 import aiohttp
 import aiodns
 import aiofiles
+import functools
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Sequence
@@ -18,6 +19,7 @@ from tqdm import tqdm
 import threading
 import contextlib
 import atexit
+import heapq
 import re
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class Config:
     weight_ngram: float = 0.2
     weight_volume: float = 0.15
     weight_auto: float = 0.15
+    resume_from: float | None = None
 
 
 # --- KONSTANTER --- #
@@ -75,6 +78,7 @@ class Candidate:
     auto: int
     length_s: float
     idx: int
+    ts: float = 0.0
     available: bool = True
     score: float | None = None
 
@@ -106,6 +110,7 @@ def candidate_from_dict(data: dict) -> "Candidate":
         auto=data["auto"],
         length_s=data["length_s"],
         idx=data["idx"],
+        ts=data.get("ts", 0.0),
         available=data.get("available", True),
         score=data.get("score"),
     )
@@ -145,6 +150,10 @@ class DomainFinder:
         self.weight_ngram = config.weight_ngram
         self.weight_volume = config.weight_volume
         self.weight_auto = config.weight_auto
+        self.resume_from = config.resume_from
+
+        from jinja2 import Environment, FileSystemLoader
+        self.env = Environment(loader=FileSystemLoader("templates"))
 
         self.config = config
 
@@ -158,14 +167,14 @@ class DomainFinder:
         self.processed: set[tuple[str, str]] = set()
         self.found: list[Candidate] = []
 
-    def __enter__(self) -> "DomainFinder":
+    async def __aenter__(self) -> "DomainFinder":
         self.start_writer()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(self, exc_type, exc, tb) -> None:
         self.stop_flush_thread()
-        asyncio.run(self.stop_writer())
-        asyncio.run(self.save_metrics_cache())
+        await self.stop_writer()
+        await self.save_metrics_cache()
 
     def _flush_worker(self) -> None:
         """Periodically write HTML output until the event is set."""
@@ -199,18 +208,21 @@ class DomainFinder:
 
     async def _writer(self) -> None:
         assert self._writer_queue is not None
-        async with aiofiles.open(self.jsonl_file, "a") as f:
-            while True:
-                line = await self._writer_queue.get()
-                if line is None:
-                    break
-                await f.write(line + "\n")
-                self._writer_queue.task_done()
+        while True:
+            line = await self._writer_queue.get()
+            if line is None:
+                break
+            await asyncio.to_thread(self._sync_write, line)
+            self._writer_queue.task_done()
+
+    def _sync_write(self, line: str) -> None:
+        with open(self.jsonl_file, "a") as f:
+            f.write(line + "\n")
 
     def start_writer(self) -> None:
         if self._writer_queue is None:
             self._writer_queue = asyncio.Queue()
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._writer_task = loop.create_task(self._writer())
             atexit.register(lambda: asyncio.run(self.stop_writer()))
 
@@ -297,6 +309,11 @@ class DomainFinder:
             async with aiofiles.open(self.jsonl_file, "r") as f:
                 async for line in f:
                     rec_dict = json.loads(line)
+                    if (
+                        self.resume_from is not None
+                        and rec_dict.get("ts", 0) < self.resume_from
+                    ):
+                        continue
                     cand = candidate_from_dict(rec_dict)
                     self.processed.add((cand.name, cand.tld))
                     if cand.available:
@@ -353,10 +370,8 @@ class DomainFinder:
 
     async def write_html(self, results: list[Candidate]) -> None:
         """Generate and write HTML output for available domains using Jinja2."""
-        from jinja2 import Environment, FileSystemLoader
 
-        env = Environment(loader=FileSystemLoader("templates"))
-        template = env.get_template("template.html")
+        template = self.env.get_template("template.html")
         html = template.render(results=results)
         async with aiofiles.open(self.html_out, "w") as f:
             await f.write(html)
@@ -379,7 +394,8 @@ class DomainFinder:
             ],
         )
 
-        signal.signal(signal.SIGINT, self.graceful_exit)
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, self.graceful_exit)
 
         await self.load_progress()
         self.start_flush_thread()
@@ -473,7 +489,7 @@ class DomainFinder:
                 else np.zeros_like(auto_arr)
             )
 
-            best: list[Candidate] = []
+            best: list[tuple[float, Candidate]] = []
             for start in range(0, len(labels), self.score_batch_size):
                 end = start + self.score_batch_size
                 batch_nn = nn[start:end]
@@ -512,11 +528,15 @@ class DomainFinder:
                     )
                     for i, lbl_idx, t in zip(sorted_idx, li, ti)
                 ]
-                best.extend(batch_candidates)
-                best.sort(key=lambda c: c.score or 0, reverse=True)
-                best = best[: self.queue_size]
+                for cand in batch_candidates:
+                    sc = cand.score or 0.0
+                    if len(best) < self.queue_size:
+                        heapq.heappush(best, (sc, cand))
+                    else:
+                        if sc > best[0][0]:
+                            heapq.heapreplace(best, (sc, cand))
 
-            raw = best
+            raw = [c for _, c in sorted(best, key=lambda x: x[0], reverse=True)]
 
             await self.save_sorted_list(raw)
 
@@ -534,6 +554,7 @@ class DomainFinder:
         available = await dns_available(domain, resolver, self.dns_timeout)
         rec = candidate_from_dict(candidate_to_dict(r))
         rec.available = available
+        rec.ts = time.time()
         self.processed.add(key)
         if available:
             self.found.append(rec)
@@ -574,8 +595,6 @@ class DomainFinder:
 # Checkpointing og fundne domæner holdes nu i klasseinstanser
 
 # Opsæt logging konfigureres i main()
-
-# Pris-estimater (USD)
 
 # Pris-estimater (USD)
 PRICE_OVERRIDES = {
@@ -621,6 +640,7 @@ def estimate_price(tld):
     return PRICE_OVERRIDES.get(tld, {2: 20, 3: 15, 4: 12}.get(len(tld), 8))
 
 
+@functools.lru_cache(maxsize=None)
 def ngram_score(label):
     """Calculate Zipf frequency score for a label.
 
@@ -634,49 +654,25 @@ def ngram_score(label):
 
 
 async def search_volume(
-    label: str, session: aiohttp.ClientSession, retries: int = 3
+    label: str,
+    session: aiohttp.ClientSession | None = None,
+    retries: int = 3,
 ) -> int:
-    """Fetch Google Trends search volume for a label asynchronously.
+    """Fetch Google Trends search volume for a label using ``pytrends``."""
 
-    Args:
-        label: Label to query.
-        session: Shared ``aiohttp`` session.
-        retries: Number of attempts before giving up.
+    from pytrends.request import TrendReq
 
-    Returns:
-        Maximum search volume over the last week.
-    """
-
-    explore_url = "https://trends.google.com/trends/api/explore"
-    widget_url = "https://trends.google.com/trends/api/widgetdata/multiline"
-    explore_req = {
-        "comparisonItem": [{"keyword": label, "geo": "", "time": "now 7-d"}],
-        "category": 0,
-        "property": "",
-    }
+    def _sync() -> int:
+        pytrend = TrendReq(hl="en-US", tz=360)
+        pytrend.build_payload([label], timeframe="now 7-d")
+        df = pytrend.interest_over_time()
+        if df.empty:
+            return 0
+        return int(df[label].max())
 
     for attempt in range(retries):
         try:
-            params = {"hl": "en-US", "tz": 360, "req": json.dumps(explore_req)}
-            async with session.get(explore_url, params=params, timeout=10) as resp:
-                resp.raise_for_status()
-                text = await resp.text()
-                data = json.loads(text[5:])  # remove )]}', prefix
-                widget = data["widgets"][0]
-
-            params = {
-                "hl": "en-US",
-                "tz": 360,
-                "req": json.dumps(widget["request"]),
-                "token": widget["token"],
-            }
-            async with session.get(widget_url, params=params, timeout=10) as resp2:
-                resp2.raise_for_status()
-                text2 = await resp2.text()
-                data2 = json.loads(text2[5:])
-                timeline = data2.get("default", {}).get("timelineData", [])
-                values = [v["value"][0] for v in timeline if v.get("value")]
-                return max(values) if values else 0
+            return await asyncio.to_thread(_sync)
         except Exception as e:
             logger.error(
                 f"Google Trends fejl for '{label}' (forsøg {attempt + 1}): {e}"
@@ -714,31 +710,19 @@ async def gather_search_volumes(
     if to_fetch:
         if session is None:
             raise RuntimeError("session required")
-        queue: asyncio.Queue[str] = asyncio.Queue()
-        for lbl in to_fetch:
-            queue.put_nowait(lbl)
         progress = tqdm(total=len(to_fetch), desc="trends")
+        sem = asyncio.Semaphore(limit or len(to_fetch))
 
-        async def worker() -> None:
-            while not queue.empty():
-                try:
-                    lbl = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        async def fetch(lbl: str) -> None:
+            async with sem:
                 val = await search_volume(lbl, session)
                 results[lbl] = val
                 if cache is not None:
                     cache.setdefault(lbl, {})["volume"] = val
-                queue.task_done()
                 progress.update(1)
 
-        workers = [asyncio.create_task(worker()) for _ in range(limit or len(to_fetch))]
-        await queue.join()
+        await asyncio.gather(*(fetch(lbl) for lbl in to_fetch))
         progress.close()
-        for w in workers:
-            w.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await w
     return results
 
 
@@ -795,31 +779,19 @@ async def gather_autocomplete_counts(
     if to_fetch:
         if session is None:
             raise RuntimeError("session required")
-        queue: asyncio.Queue[str] = asyncio.Queue()
-        for lbl in to_fetch:
-            queue.put_nowait(lbl)
         progress = tqdm(total=len(to_fetch), desc="auto")
+        sem = asyncio.Semaphore(limit or len(to_fetch))
 
-        async def worker() -> None:
-            while not queue.empty():
-                try:
-                    lbl = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        async def fetch(lbl: str) -> None:
+            async with sem:
                 val = await autocomplete_count(lbl, session)
                 results[lbl] = val
                 if cache is not None:
                     cache.setdefault(lbl, {})["auto"] = val
-                queue.task_done()
                 progress.update(1)
 
-        workers = [asyncio.create_task(worker()) for _ in range(limit or len(to_fetch))]
-        await queue.join()
+        await asyncio.gather(*(fetch(lbl) for lbl in to_fetch))
         progress.close()
-        for w in workers:
-            w.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await w
     return results
 
 
@@ -857,14 +829,18 @@ def generate_labels_markov(
     import random
 
     words = [w.lower() for w in top_n_list(lang, n_top=5000) if w.isalpha()]
-    transitions: dict[str, list[str]] = {}
+    from collections import defaultdict
+
+    transitions: defaultdict[str, list[str]] = defaultdict(list)
     for w in words:
         for a, b in zip(w, w[1:]):
-            transitions.setdefault(a, []).append(b)
+            transitions[a].append(b)
 
     labels: set[str] = set()
     letters = list(transitions.keys())
-    while len(labels) < n:
+    attempts = 0
+    max_attempts = n * 20
+    while len(labels) < n and attempts < max_attempts:
         label = random.choice(letters)
         while len(label) < max_label_len:
             nexts = transitions.get(label[-1])
@@ -875,6 +851,9 @@ def generate_labels_markov(
                 labels.add(label)
                 if len(labels) >= n:
                     break
+        attempts += 1
+    if attempts >= max_attempts and len(labels) < n:
+        logger.warning("Kunne kun generere %d labels efter %d forsøg", len(labels), attempts)
     logger.info(f"Markov-genereret {len(labels)} labels")
     return list(labels)
 
