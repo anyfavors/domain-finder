@@ -252,9 +252,10 @@ class DomainFinder:
     def write_html(self, results: list[Candidate]) -> None:
         """Generate and write HTML output for available domains."""
         rows = ''.join(
-            f"<tr><td>{r.name}</td><td>{r.tld}</td><td>{getattr(r, 'score', 0)}"
-            f"</td><td>{r.price}</td><td>{r.ngram:.2f}</td>"
-            f"<td>{r.volume}</td><td>{r.auto}</td></tr>\n"
+            f"<tr role='row'><td role='cell'>{r.name}</td><td role='cell'>{r.tld}</td>"
+            f"<td role='cell'>{getattr(r, 'score', 0)}</td><td role='cell'>{r.price}</td>"
+            f"<td role='cell'>{r.ngram:.2f}</td><td role='cell'>{r.volume}</td>"
+            f"<td role='cell'>{r.auto}</td></tr>\n"
             for r in results
         )
         html = f"""<!DOCTYPE html>
@@ -263,14 +264,14 @@ class DomainFinder:
 <link rel='stylesheet' href='https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css'>
 <title>Valgte Domæner</title></head><body><div class='container py-3'>
 <h2>Tilgængelige Domæner</h2>
-<table id='domains' class='table table-striped'>
+<table id='domains' class='table table-striped' role='table'>
 <caption class='caption-top'>Available domain names sorted by score</caption>
-<thead><tr><th scope="col">Navn</th><th scope="col">TLD</th><th scope="col">Score</th><th scope="col">Pris</th><th scope="col">n-gram</th><th scope="col">Volumen</th><th scope="col">Autocomplete</th></tr></thead>
+<thead><tr role='row'><th scope="col">Navn</th><th scope="col">TLD</th><th scope="col">Score</th><th scope="col">Pris</th><th scope="col">n-gram</th><th scope="col">Volumen</th><th scope="col">Autocomplete</th></tr></thead>
 <tbody>{rows}</tbody></table></div>
 <script src='https://code.jquery.com/jquery-3.6.0.min.js'></script>
 <script src='https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js'></script>
 <script src='https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js'></script>
-<script>$(document).ready(()=>$('#domains').DataTable({pageLength:10}));</script>
+<script>$(document).ready(()=>$('#domains').DataTable({{pageLength:10}}));</script>
 </body></html>"""
         with open(self.html_out, 'w') as f:
             f.write(html)
