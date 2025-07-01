@@ -42,6 +42,7 @@ class Config:
     queue_size: int = 10000
     score_batch_size: int = 1000
     flush_interval: float = 5.0
+    trends_concurrency: int = 5
 
 # --- KONSTANTER --- #
 DEFAULT_CONFIG = Config()
@@ -123,6 +124,7 @@ class DomainFinder:
         self.dns_batch_size = config.dns_batch_size
         self.queue_size = config.queue_size
         self.flush_interval = config.flush_interval
+        self.trends_concurrency = config.trends_concurrency
         self.tld_cache_file = config.tld_cache_file
         self.tld_cache_age = config.tld_cache_age
         self.metrics_cache_file = config.metrics_cache_file
@@ -317,7 +319,11 @@ class DomainFinder:
 
         logging.info(f"Starter beregning af metrics for {len(labels)} labels")
 
-        volumes_task = gather_search_volumes(labels.tolist(), self.metrics_cache)
+        volumes_task = gather_search_volumes(
+            labels.tolist(),
+            self.metrics_cache,
+            limit=self.trends_concurrency,
+        )
         autos_task = gather_autocomplete_counts(labels.tolist(), self.metrics_cache)
         volumes, autos = await asyncio.gather(volumes_task, autos_task)
 
@@ -480,6 +486,8 @@ def parse_args():
                         help='keep only top N scored combinations')
     parser.add_argument('--flush-interval', type=float, default=defaults.flush_interval,
                         help='seconds between HTML updates')
+    parser.add_argument('--trends-concurrency', type=int, default=defaults.trends_concurrency,
+                        help='max concurrent Google Trends requests')
     return parser.parse_args()
 
 
@@ -604,9 +612,17 @@ async def search_volume(label, session: aiohttp.ClientSession | None = None, ret
 
 
 async def gather_search_volumes(
-    labels: Sequence[str], cache: dict[str, dict[str, int]] | None = None
+    labels: Sequence[str],
+    cache: dict[str, dict[str, int]] | None = None,
+    limit: int | None = None,
 ) -> dict[str, int]:
-    """Fetch search volume for all labels concurrently with optional caching."""
+    """Fetch search volume for all labels concurrently with optional caching.
+
+    Args:
+        labels: Iterable of label strings.
+        cache: Optional metrics cache.
+        limit: Maximum number of concurrent requests.
+    """
     results: dict[str, int] = {}
     to_fetch: list[str] = []
     if cache is not None:
@@ -619,11 +635,15 @@ async def gather_search_volumes(
         to_fetch = list(labels)
 
     if to_fetch:
+        sem = asyncio.Semaphore(limit) if limit else None
         async with aiohttp.ClientSession() as session:
-            tasks = {
-                lbl: asyncio.create_task(search_volume(lbl, session))
-                for lbl in to_fetch
-            }
+            async def worker(lbl: str) -> int:
+                if sem:
+                    async with sem:
+                        return await search_volume(lbl, session)
+                return await search_volume(lbl, session)
+
+            tasks = {lbl: asyncio.create_task(worker(lbl)) for lbl in to_fetch}
             fetched = await asyncio.gather(*tasks.values())
         for lbl, vol in zip(tasks.keys(), fetched):
             results[lbl] = vol
@@ -809,6 +829,7 @@ def main():
         dns_batch_size=args.dns_batch_size,
         queue_size=args.queue_size,
         flush_interval=args.flush_interval,
+        trends_concurrency=args.trends_concurrency,
     )
     finder = DomainFinder(cfg)
     asyncio.run(finder.run())
