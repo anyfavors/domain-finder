@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import socket
-import random
 import itertools
-import requests
 import time
 import json
 import signal
@@ -11,15 +9,15 @@ import logging
 import argparse
 import asyncio
 import aiohttp
+import aiodns
 from dataclasses import dataclass, asdict
 from typing import Sequence
 import numpy as np
 from wordfreq import zipf_frequency
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
 import threading
+
+VOWELS = set("aeiouy")
 
 
 @dataclass
@@ -43,6 +41,7 @@ class Config:
     score_batch_size: int = 1000
     flush_interval: float = 5.0
     trends_concurrency: int = 5
+    autocomplete_concurrency: int = 5
 
 # --- KONSTANTER --- #
 DEFAULT_CONFIG = Config()
@@ -63,6 +62,7 @@ DNS_BATCH_SIZE = DEFAULT_CONFIG.dns_batch_size  # antal samtidige DNS-opslag
 QUEUE_SIZE = DEFAULT_CONFIG.queue_size  # behold kun de bedste N kombinationer
 SCORE_BATCH_SIZE = DEFAULT_CONFIG.score_batch_size  # antal records der scores ad gangen
 HTML_FLUSH_INTERVAL = DEFAULT_CONFIG.flush_interval  # seconds between HTML updates
+AUTOCOMPLETE_CONCURRENCY = DEFAULT_CONFIG.autocomplete_concurrency
 
 
 @dataclass
@@ -125,6 +125,7 @@ class DomainFinder:
         self.queue_size = config.queue_size
         self.flush_interval = config.flush_interval
         self.trends_concurrency = config.trends_concurrency
+        self.autocomplete_concurrency = config.autocomplete_concurrency
         self.tld_cache_file = config.tld_cache_file
         self.tld_cache_age = config.tld_cache_age
         self.metrics_cache_file = config.metrics_cache_file
@@ -140,14 +141,6 @@ class DomainFinder:
 
         self.processed: set[tuple[str, str]] = set()
         self.found: list[Candidate] = []
-        self.session = requests.Session()
-        retries = Retry(
-            total=5,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            respect_retry_after_header=True,
-        )
-        self.session.mount('https://', HTTPAdapter(max_retries=retries))
 
     def _flush_worker(self) -> None:
         """Periodically write HTML output until the event is set."""
@@ -172,7 +165,7 @@ class DomainFinder:
             self._flush_thread = None
         self.write_html(self.found)
 
-    def fetch_tlds(self, retries: int = 3) -> list[str]:
+    async def fetch_tlds(self, session: aiohttp.ClientSession, retries: int = 3) -> list[str]:
         """Fetch a list of preferred TLDs from IANA with local caching."""
         if not self.force_refresh:
             try:
@@ -189,12 +182,13 @@ class DomainFinder:
 
         for attempt in range(retries):
             try:
-                resp = self.session.get(
+                async with session.get(
                     'https://data.iana.org/TLD/tlds-alpha-by-domain.txt',
                     timeout=10,
-                )
-                resp.raise_for_status()
-                tlds = [l.lower() for l in resp.text.splitlines() if l and not l.startswith('#')]
+                ) as resp:
+                    resp.raise_for_status()
+                    text = await resp.text()
+                tlds = [l.lower() for l in text.splitlines() if l and not l.startswith('#')]
                 ascii_tlds = [t for t in tlds if t.isascii() and t.isalpha()]
                 try:
                     with open(self.tld_cache_file, 'w') as f:
@@ -204,10 +198,10 @@ class DomainFinder:
                 top = sorted(ascii_tlds, key=len)[: self.top_tld_count]
                 logging.info(f"Valgt {len(top)} vestlige, ASCII-only TLD'er")
                 return top
-            except requests.RequestException as e:
+            except aiohttp.ClientError as e:
                 logging.error(f"Forsøg {attempt + 1} på at hente TLDs fejlede: {e}")
                 if attempt < retries - 1:
-                    time.sleep(1)
+                    await asyncio.sleep(1)
         return []
 
 
@@ -265,29 +259,48 @@ class DomainFinder:
             logging.error(f"Kunne ikke gemme metrics cache: {e}")
 
     def write_html(self, results: list[Candidate]) -> None:
-        """Generate and write HTML output for available domains."""
-        rows = ''.join(
-            f"<tr role='row'><td role='cell'>{r.name}</td><td role='cell'>{r.tld}</td>"
-            f"<td role='cell'>{getattr(r, 'score', 0)}</td><td role='cell'>{r.price}</td>"
-            f"<td role='cell'>{r.ngram:.2f}</td><td role='cell'>{r.volume}</td>"
-            f"<td role='cell'>{r.auto}</td></tr>\n"
-            for r in results
+        """Generate and write HTML output for available domains using Jinja2."""
+        from jinja2 import Template
+
+        template = Template(
+            """<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <link rel='stylesheet' href='style.css'>
+  <title>Available Domains</title>
+</head>
+<body>
+<header><h1>Available Domains</h1><button onclick='toggleTheme()'>Toggle theme</button></header>
+<main>
+  <table role='table'>
+    <thead>
+      <tr><th scope='col'>Name</th><th scope='col'>TLD</th><th scope='col'>Score</th><th scope='col'>Price</th><th scope='col'>n-gram</th><th scope='col'>Volume</th><th scope='col'>Auto</th></tr>
+    </thead>
+    <tbody>
+    {% for r in results %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.tld }}</td>
+        <td>{{ r.score|default(0) }}</td>
+        <td>{{ r.price }}</td>
+        <td>{{ '%.2f' % r.ngram }}</td>
+        <td>{{ r.volume }}</td>
+        <td>{{ r.auto }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</main>
+<script>
+function toggleTheme(){document.body.classList.toggle('dark');}
+</script>
+</body>
+</html>
+"""
         )
-        html = f"""<!DOCTYPE html>
-<html lang='da'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-<link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
-<link rel='stylesheet' href='https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css'>
-<title>Valgte Domæner</title></head><body><div class='container py-3'>
-<h2>Tilgængelige Domæner</h2>
-<table id='domains' class='table table-striped' role='table'>
-<caption class='caption-top'>Available domain names sorted by score</caption>
-<thead><tr role='row'><th scope="col">Navn</th><th scope="col">TLD</th><th scope="col">Score</th><th scope="col">Pris</th><th scope="col">n-gram</th><th scope="col">Volumen</th><th scope="col">Autocomplete</th></tr></thead>
-<tbody>{rows}</tbody></table></div>
-<script src='https://code.jquery.com/jquery-3.6.0.min.js'></script>
-<script src='https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js'></script>
-<script src='https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js'></script>
-<script>$(document).ready(()=>$('#domains').DataTable({{pageLength:10}}));</script>
-</body></html>"""
+        html = template.render(results=results)
         with open(self.html_out, 'w') as f:
             f.write(html)
 
@@ -314,21 +327,28 @@ class DomainFinder:
         self.load_progress()
         self.start_flush_thread()
         self.load_metrics_cache()
-        tlds = self.fetch_tlds()
-        labels = generate_labels(self.num_candidates, self.max_label_len)
+        async with aiohttp.ClientSession() as session:
+            tlds = await self.fetch_tlds(session)
+            labels = generate_labels(self.num_candidates, self.max_label_len)
 
-        logging.info(f"Starter beregning af metrics for {len(labels)} labels")
+            logging.info(f"Starter beregning af metrics for {len(labels)} labels")
 
-        volumes_task = gather_search_volumes(
-            labels.tolist(),
-            self.metrics_cache,
-            limit=self.trends_concurrency,
-        )
-        autos_task = gather_autocomplete_counts(labels.tolist(), self.metrics_cache)
-        volumes, autos = await asyncio.gather(volumes_task, autos_task)
+            volumes_task = gather_search_volumes(
+                labels,
+                self.metrics_cache,
+                limit=self.trends_concurrency,
+                session=session,
+            )
+            autos_task = gather_autocomplete_counts(
+                labels,
+                self.metrics_cache,
+                limit=self.autocomplete_concurrency,
+                session=session,
+            )
+            volumes, autos = await asyncio.gather(volumes_task, autos_task)
 
         ngram_scores = np.vectorize(ngram_score)(labels)
-        lengths = np.char.str_len(labels)
+        lengths = np.array([len(lbl) for lbl in labels])
         length_scores = (self.max_label_len - lengths + 1) / self.max_label_len
         volume_arr = np.array([volumes.get(lbl, 0) for lbl in labels])
         auto_arr = np.array([autos.get(lbl, 0) for lbl in labels])
@@ -364,56 +384,35 @@ class DomainFinder:
         import heapq
 
         heap: list[tuple[float, Candidate]] = []
-        batch_args = []
-        batch_cands = []
         idx = 0
-        with Pool(processes=cpu_count()) as pool:
-            for lbl in tqdm(labels, desc='Scoring', unit='label'):
-                stats = label_stats[lbl]
-                for tld in tlds:
-                    cand = Candidate(
-                        name=lbl,
-                        tld=tld,
-                        price=tld_prices[tld],
-                        ngram=stats['ngram'],
-                        volume=stats['volume'],
-                        auto=stats['auto'],
-                        length_s=stats['length_s'],
-                        idx=idx,
-                    )
-                    idx += 1
-                    batch_cands.append(cand)
-                    batch_args.append(
-                        (
-                            cand,
-                            min_price,
-                            max_price,
-                            min_ngram,
-                            max_ngram,
-                            min_volume,
-                            max_volume,
-                            min_auto,
-                            max_auto,
-                        )
-                    )
+        price_arr = np.array([tld_prices[t] for t in tlds])
+        pn = (price_arr - min_price) / (max_price - min_price) if max_price > min_price else np.zeros_like(price_arr)
 
-                    if len(batch_args) >= self.score_batch_size:
-                        for c, score in zip(batch_cands, pool.map(compute_score, batch_args)):
-                            c.score = score
-                            if len(heap) < self.queue_size:
-                                heapq.heappush(heap, (score, c))
-                            elif score > heap[0][0]:
-                                heapq.heapreplace(heap, (score, c))
-                        batch_args.clear()
-                        batch_cands.clear()
-
-            if batch_args:
-                for c, score in zip(batch_cands, pool.map(compute_score, batch_args)):
-                    c.score = score
-                    if len(heap) < self.queue_size:
-                        heapq.heappush(heap, (score, c))
-                    elif score > heap[0][0]:
-                        heapq.heapreplace(heap, (score, c))
+        for lbl in tqdm(labels, desc='Scoring', unit='label'):
+            stats = label_stats[lbl]
+            nn = (stats['ngram'] - min_ngram) / (max_ngram - min_ngram) if max_ngram > min_ngram else 0
+            vn = (stats['volume'] - min_volume) / (max_volume - min_volume) if max_volume > min_volume else 0
+            an = (stats['auto'] - min_auto) / (max_auto - min_auto) if max_auto > min_auto else 0
+            ls = stats['length_s']
+            scores = 0.3 * ls + 0.2 * pn + 0.2 * nn + 0.15 * vn + 0.15 * an
+            for tld, score in zip(tlds, scores):
+                cand = Candidate(
+                    name=lbl,
+                    tld=tld,
+                    price=tld_prices[tld],
+                    ngram=stats['ngram'],
+                    volume=stats['volume'],
+                    auto=stats['auto'],
+                    length_s=ls,
+                    idx=idx,
+                )
+                idx += 1
+                score = round(float(score), 4)
+                cand.score = score
+                if len(heap) < self.queue_size:
+                    heapq.heappush(heap, (score, cand))
+                elif score > heap[0][0]:
+                    heapq.heapreplace(heap, (score, cand))
 
         raw = [c for _, c in sorted(heap, key=lambda x: x[0], reverse=True)]
         self.save_sorted_list(raw)
@@ -488,6 +487,8 @@ def parse_args():
                         help='seconds between HTML updates')
     parser.add_argument('--trends-concurrency', type=int, default=defaults.trends_concurrency,
                         help='max concurrent Google Trends requests')
+    parser.add_argument('--autocomplete-concurrency', type=int, default=defaults.autocomplete_concurrency,
+                        help='max concurrent autocomplete requests')
     return parser.parse_args()
 
 
@@ -515,12 +516,11 @@ def is_pronounceable(s):
     Returns:
         bool: True if pronounceable.
     """
-    v = set('aeiouy')
-    if not any(c in v for c in s):
+    if not any(c in VOWELS for c in s):
         return False
     run = 0
     for c in s:
-        run = run + 1 if c not in v else 0
+        run = run + 1 if c not in VOWELS else 0
         if run > 2:
             return False
     return True
@@ -615,6 +615,7 @@ async def gather_search_volumes(
     labels: Sequence[str],
     cache: dict[str, dict[str, int]] | None = None,
     limit: int | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> dict[str, int]:
     """Fetch search volume for all labels concurrently with optional caching.
 
@@ -635,16 +636,22 @@ async def gather_search_volumes(
         to_fetch = list(labels)
 
     if to_fetch:
+        close = False
         sem = asyncio.Semaphore(limit) if limit else None
-        async with aiohttp.ClientSession() as session:
-            async def worker(lbl: str) -> int:
-                if sem:
-                    async with sem:
-                        return await search_volume(lbl, session)
-                return await search_volume(lbl, session)
+        if session is None:
+            session = aiohttp.ClientSession()
+            close = True
 
-            tasks = {lbl: asyncio.create_task(worker(lbl)) for lbl in to_fetch}
-            fetched = await asyncio.gather(*tasks.values())
+        async def worker(lbl: str) -> int:
+            if sem:
+                async with sem:
+                    return await search_volume(lbl, session)
+            return await search_volume(lbl, session)
+
+        tasks = {lbl: asyncio.create_task(worker(lbl)) for lbl in to_fetch}
+        fetched = await asyncio.gather(*tasks.values())
+        if close:
+            await session.close()
         for lbl, vol in zip(tasks.keys(), fetched):
             results[lbl] = vol
             if cache is not None:
@@ -697,7 +704,10 @@ async def autocomplete_count(
 
 
 async def gather_autocomplete_counts(
-    labels: Sequence[str], cache: dict[str, dict[str, int]] | None = None
+    labels: Sequence[str],
+    cache: dict[str, dict[str, int]] | None = None,
+    limit: int | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> dict[str, int]:
     """Fetch autocomplete counts for all labels concurrently with optional caching."""
     results: dict[str, int] = {}
@@ -712,12 +722,22 @@ async def gather_autocomplete_counts(
         to_fetch = list(labels)
 
     if to_fetch:
-        async with aiohttp.ClientSession() as session:
-            tasks = {
-                lbl: asyncio.create_task(autocomplete_count(lbl, session))
-                for lbl in to_fetch
-            }
-            fetched = await asyncio.gather(*tasks.values())
+        close = False
+        sem = asyncio.Semaphore(limit) if limit else None
+        if session is None:
+            session = aiohttp.ClientSession()
+            close = True
+
+        async def worker(lbl: str) -> int:
+            if sem:
+                async with sem:
+                    return await autocomplete_count(lbl, session)
+            return await autocomplete_count(lbl, session)
+
+        tasks = {lbl: asyncio.create_task(worker(lbl)) for lbl in to_fetch}
+        fetched = await asyncio.gather(*tasks.values())
+        if close:
+            await session.close()
         for lbl, val in zip(tasks.keys(), fetched):
             results[lbl] = val
             if cache is not None:
@@ -725,41 +745,31 @@ async def gather_autocomplete_counts(
     return results
 
 
-def generate_labels(n, max_label_len: int = Config().max_label_len):
-    """Generate a deterministic array of pronounceable labels.
+def generate_labels(n, max_label_len: int = Config().max_label_len) -> list[str]:
+    """Generate a deterministic list of pronounceable labels with pruning."""
 
-    Args:
-        n (int): Number of labels to produce.
-
-    Returns:
-        numpy.ndarray: Generated labels in deterministic order.
-    """
     letters = 'abcdefghijklmnopqrstuvwxyz'
-    labels = []
     logging.info(f"Starter generering af {n} labels")
-    for length in range(1, max_label_len + 1):
-        for combo in itertools.product(letters, repeat=length):
-            cand = ''.join(combo)
-            if is_pronounceable(cand):
-                labels.append(cand)
-                if len(labels) >= n:
-                    logging.info(f"Genereret {len(labels)} udtalelige labels")
-                    return np.array(labels)
-    logging.info(f"Genereret {len(labels)} udtalelige labels")
-    return np.array(labels)
+    results: list[str] = []
 
+    def build(prefix: str, run: int) -> None:
+        if len(results) >= n:
+            return
+        if prefix and is_pronounceable(prefix):
+            results.append(prefix)
+            if len(results) >= n:
+                return
+        if len(prefix) >= max_label_len:
+            return
+        for ch in letters:
+            new_run = run + 1 if ch not in VOWELS else 0
+            if new_run >= 3:
+                continue
+            build(prefix + ch, new_run)
 
-def normalize(vals):
-    """Normalize a list of numeric values to the range 0-1.
-
-    Args:
-        vals (list[float]): Values to normalize.
-
-    Returns:
-        list[float]: Normalized values.
-    """
-    mn, mx = min(vals), max(vals)
-    return [(v - mn) / (mx - mn) if mx > mn else 0 for v in vals]
+    build('', 0)
+    logging.info(f"Genereret {len(results)} udtalelige labels")
+    return results
 
 
 async def dns_available(domain: str) -> bool:
@@ -771,44 +781,16 @@ async def dns_available(domain: str) -> bool:
     Returns:
         True if no DNS record was found.
     """
-    loop = asyncio.get_running_loop()
+    resolver = aiodns.DNSResolver()
     try:
-        await loop.getaddrinfo(domain, None)
+        await resolver.gethostbyname(domain, socket.AF_INET)
         return False
-    except socket.gaierror:
+    except aiodns.error.DNSError:
         return True
 
 
 
 # --- Score funktion for multiprocessing --- #
-def compute_score(args):
-    """Compute the weighted score for a domain candidate."""
-
-    (
-        r,
-        min_price,
-        max_price,
-        min_ngram,
-        max_ngram,
-        min_volume,
-        max_volume,
-        min_auto,
-        max_auto,
-    ) = args
-
-    def norm(val, mn, mx):
-        return (val - mn) / (mx - mn) if mx > mn else 0
-
-    pn = norm(r.price, min_price, max_price)
-    nn = norm(r.ngram, min_ngram, max_ngram)
-    vn = norm(r.volume, min_volume, max_volume)
-    an = norm(r.auto, min_auto, max_auto)
-
-    score = round(
-        0.3 * r.length_s + 0.2 * pn + 0.2 * nn + 0.15 * vn + 0.15 * an,
-        4,
-    )
-    return score
 
 # --- Hovedprogram --- #
 def main():
@@ -830,6 +812,7 @@ def main():
         queue_size=args.queue_size,
         flush_interval=args.flush_interval,
         trends_concurrency=args.trends_concurrency,
+        autocomplete_concurrency=args.autocomplete_concurrency,
     )
     finder = DomainFinder(cfg)
     asyncio.run(finder.run())

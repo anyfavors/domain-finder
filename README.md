@@ -8,7 +8,7 @@ log for further processing.
 
 ## Prerequisites
 
-* Python 3.8 or later
+* Python 3.11
 * Network access to fetch TLD data and Google trends information
 
 Install required Python packages using:
