@@ -258,7 +258,7 @@ class DomainFinder:
             for r in results
         )
         html = f"""<!DOCTYPE html>
-<html lang='da'><head><meta charset='UTF-8'>
+<html lang='da'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
 <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
 <link rel='stylesheet' href='https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css'>
 <title>Valgte Domæner</title></head><body><div class='container py-3'>
