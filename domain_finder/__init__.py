@@ -829,7 +829,11 @@ def generate_labels_markov(
     from wordfreq import top_n_list
     import random
 
-    words = [w.lower() for w in top_n_list(lang, n_top=5000) if w.isalpha()]
+    # wordfreq.top_n_list expects the number of words as the second argument
+    # (named ``n``). The previous call used ``n_top`` which is no longer
+    # supported in wordfreq 2.5+. Pass the count positionally for
+    # compatibility.
+    words = [w.lower() for w in top_n_list(lang, 5000) if w.isalpha()]
     from collections import defaultdict
 
     transitions: defaultdict[str, list[str]] = defaultdict(list)
