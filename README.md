@@ -1,5 +1,8 @@
 # Domain Finder
 
+![Tests](https://github.com/example/domain-finder/actions/workflows/ci.yml/badge.svg)
+![Lint](https://github.com/example/domain-finder/actions/workflows/lint.yml/badge.svg)
+
 Domain Finder is a Python utility that generates pronounceable short labels,
 combines them with popular top-level domains (TLDs), calculates a score based on
 search trends and other heuristics, and checks if the resulting domains are
@@ -49,6 +52,9 @@ Available options:
 - `--queue-size` – how many top-scoring combinations to retain before scanning
 - `--flush-interval` – seconds between HTML updates
 - `--trends-concurrency` – max concurrent Google Trends requests
+- `--dns-timeout` – timeout for DNS queries in seconds
+- `--lang` – language code for word frequency scoring
+- `--tld-cache-refresh` – revalidate cached TLD list using IANA headers
 
 The process may take a while as it scores thousands of potential domains and
 queries DNS. Progress information is printed to the console and recorded in
