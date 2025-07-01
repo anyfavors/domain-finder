@@ -26,17 +26,17 @@ def test_estimate_price():
 
 
 def test_generate_labels():
-    labels = domain.generate_labels(5)
+    labels = list(domain.generate_labels(5))
     assert len(labels) == 5
     assert all(lbl.isalpha() for lbl in labels)
     assert len(set(labels)) == len(labels)
     for lbl in labels:
         assert domain.is_pronounceable(lbl)
-        assert 1 <= len(lbl) <= domain.MAX_LABEL_LEN
+        assert 1 <= len(lbl) <= domain.Config().max_label_len
 
 
 def test_generate_labels_deterministic():
-    assert domain.generate_labels(6) == domain.generate_labels(6)
+    assert list(domain.generate_labels(6)) == list(domain.generate_labels(6))
 
 
 def test_fetch_tlds_cached(tmp_path):
@@ -105,45 +105,45 @@ def test_fetch_tlds_cache_expired(tmp_path):
 
 
 def test_search_volume_cache(monkeypatch):
-    async def fake_sv(label, session=None, retries=3):
+    async def fake_sv(label, session, retries=3):
         return 42
 
     monkeypatch.setattr(domain, "search_volume", fake_sv)
     cache = {}
-    res = asyncio.run(domain.gather_search_volumes(["abc"], cache))
+    res = asyncio.run(domain.gather_search_volumes(["abc"], cache, session=object()))
     assert res == {"abc": 42}
     assert cache["abc"]["volume"] == 42
 
-    async def fail_sv(label, session=None, retries=3):
+    async def fail_sv(label, session, retries=3):
         raise AssertionError("called")
 
     monkeypatch.setattr(domain, "search_volume", fail_sv)
-    res2 = asyncio.run(domain.gather_search_volumes(["abc"], cache))
+    res2 = asyncio.run(domain.gather_search_volumes(["abc"], cache, session=object()))
     assert res2 == {"abc": 42}
 
 
 def test_autocomplete_cache(monkeypatch):
-    async def fake_ac(label, session=None, retries=3):
+    async def fake_ac(label, session, retries=3):
         return 7
 
     monkeypatch.setattr(domain, "autocomplete_count", fake_ac)
     cache = {}
-    res = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
+    res = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache, session=object()))
     assert res == {"abc": 7}
     assert cache["abc"]["auto"] == 7
 
-    async def fail_ac(label, session=None, retries=3):
+    async def fail_ac(label, session, retries=3):
         raise AssertionError("called")
 
     monkeypatch.setattr(domain, "autocomplete_count", fail_ac)
-    res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache))
+    res2 = asyncio.run(domain.gather_autocomplete_counts(["abc"], cache, session=object()))
     assert res2 == {"abc": 7}
 
 
 def test_autocomplete_concurrency(monkeypatch):
     calls = []
 
-    async def fake_ac(label, session=None, retries=3):
+    async def fake_ac(label, session, retries=3):
         calls.append(label)
         await asyncio.sleep(0)
         return 1
@@ -151,7 +151,7 @@ def test_autocomplete_concurrency(monkeypatch):
     monkeypatch.setattr(domain, "autocomplete_count", fake_ac)
     cache = {}
     res = asyncio.run(
-        domain.gather_autocomplete_counts(["a", "b"], cache, limit=1)
+        domain.gather_autocomplete_counts(["a", "b"], cache, limit=1, session=object())
     )
     assert res == {"a": 1, "b": 1}
     assert calls == ["a", "b"]
@@ -164,4 +164,17 @@ def test_candidate_serialization_roundtrip():
     new = domain.candidate_from_dict(data)
     assert new == cand
     assert hasattr(new, "score") and new.score == cand.score
+
+
+def test_cli_invocation(monkeypatch):
+    called = False
+
+    async def fake_run(self):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(domain.DomainFinder, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["domain-finder", "--num-candidates", "1"])
+    domain.main()
+    assert called
 
