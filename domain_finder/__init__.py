@@ -825,6 +825,7 @@ async def dns_available(
 
     Args:
         domain: Full domain to query.
+        timeout: Optional resolver timeout in seconds.
 
     Returns:
         True if no DNS record was found.
@@ -832,7 +833,7 @@ async def dns_available(
     if resolver is None:
         resolver = aiodns.DNSResolver(timeout=timeout)
     try:
-        await resolver.gethostbyname(domain, socket.AF_INET, timeout=timeout)
+        await resolver.gethostbyname(domain, socket.AF_INET)
         return False
     except aiodns.error.DNSError:
         return True
