@@ -21,17 +21,6 @@ import atexit
 import heapq
 import re
 import inspect
-from requests.packages.urllib3.util.retry import Retry as _Retry
-
-if "method_whitelist" not in inspect.signature(_Retry.__init__).parameters:
-    _orig_retry_init = _Retry.__init__
-
-    def _new_retry_init(self, *args, method_whitelist=None, **kwargs):
-        if method_whitelist is not None:
-            kwargs.setdefault("allowed_methods", method_whitelist)
-        _orig_retry_init(self, *args, **kwargs)
-
-    _Retry.__init__ = _new_retry_init
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +418,10 @@ class DomainFinder:
                 logger.info(f"Genoptager fra {self.sorted_list_file}")
                 with open(self.sorted_list_file) as f:
                     raw = [candidate_from_dict(json.loads(line)) for line in f]
+                logger.info("Starter DNS-scanning af sorteret liste...")
+                await self.scan_domains(raw)
+                logger.info("Scanning færdig.")
+                return
             else:
                 async with aiohttp.ClientSession() as session:
                     tlds = await self.fetch_tlds(session)
