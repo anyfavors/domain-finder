@@ -115,7 +115,6 @@ def test_fetch_tlds_cache_expired(tmp_path):
     assert tlds == ["com"]
 
 
-
 def test_autocomplete_cache(monkeypatch):
     async def fake_ac(label, session, retries=3):
         return 7
