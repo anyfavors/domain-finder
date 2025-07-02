@@ -20,7 +20,6 @@ import contextlib
 import atexit
 import heapq
 import re
-import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +214,10 @@ class DomainFinder:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(self.write_html(self.found))
+            try:
+                asyncio.run(self.write_html(self.found))
+            except RuntimeError:
+                self.write_html_sync(self.found)
             return None
         else:
             return loop.create_task(self.write_html(self.found))
@@ -390,6 +392,14 @@ class DomainFinder:
         async with aiofiles.open(self.html_out, "w") as f:
             await f.write(html)
 
+    def write_html_sync(self, results: list[Candidate]) -> None:
+        """Synchronous fallback for :func:`write_html`."""
+
+        template = self.env.get_template("template.html")
+        html = template.render(results=results)
+        with open(self.html_out, "w") as f:
+            f.write(html)
+
     async def graceful_exit(self) -> None:
         """Write pending output and metrics before exiting."""
         logger.info("Afslutter og gemmer HTML...")
@@ -445,7 +455,6 @@ class DomainFinder:
                         session=session,
                     )
                     autos = await autos_task
-                    volumes = {lbl: 0 for lbl in labels}
 
             ngram_scores = np.array(
                 [await asyncio.to_thread(ngram_score, lbl) for lbl in labels]
@@ -666,8 +675,6 @@ def ngram_score(label):
         float: Zipf frequency score.
     """
     return zipf_frequency(label, "en")
-
-
 
 
 async def autocomplete_count(
