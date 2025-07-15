@@ -6,7 +6,7 @@ authors = [{name = "Example", email = "example@example.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "aiohttp==3.9.3",
+    "aiohttp==3.12.14",
     "aiodns==3.0.0",
     "wordfreq==2.5.1",
     "tqdm==4.66.2",
